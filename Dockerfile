@@ -1,25 +1,25 @@
-# Use an official lightweight Debian image
+# Use official Go image
 FROM golang:1.22-bullseye
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    ffmpeg \
- && pip3 install -U yt-dlp \
- && rm -rf /var/lib/apt/lists/*
+# Install ffmpeg and yt-dlp
+RUN apt-get update && \
+    apt-get install -y ffmpeg python3 python3-pip && \
+    pip3 install -U yt-dlp
 
 # Set working directory
 WORKDIR /app
 
-# Copy Go files
+# Copy all project files
 COPY . .
 
-# Build your app
-RUN go build -o app .
+# Build your Go app
+RUN go build -o bot main.go
 
-# Expose the port (matches your Go health check)
+# Set environment variable for port
+ENV PORT=10000
+
+# Expose port for health check
 EXPOSE 10000
 
-# Start your bot
-CMD ["./app"]
+# Run bot
+CMD ["./bot"]

@@ -67,7 +67,7 @@ func main() {
 	}
 }
 
-// 🌐 Health check server (keeps Render alive)
+// 🌐 Health check server + self-ping to stay awake
 func startPingServer() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -84,11 +84,28 @@ func startPingServer() {
 			log.Fatalf("Ping server error: %v", err)
 		}
 	}()
+
+	// 🕐 Self-ping every 10 minutes
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+
+		url := "http://localhost:" + port + "/" // ping own server
+
+		for range ticker.C {
+			resp, err := http.Get(url)
+			if err != nil {
+				log.Printf("⚠️ Self-ping failed: %v", err)
+				continue
+			}
+			resp.Body.Close()
+			log.Println("🌐 Self-ping sent to keep awake")
+		}
+	}()
 }
 
 // 🎬 Main download handler
 func handleDownload(bot *tgbotapi.BotAPI, chatID int64, replyTo int, url string) {
-	// Send "yuklanmoqda..." message
 	waitMsg := tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda...")
 	waitMsg.ReplyToMessageID = replyTo
 	sent, _ := bot.Send(waitMsg)
@@ -119,7 +136,6 @@ func handleDownload(bot *tgbotapi.BotAPI, chatID int64, replyTo int, url string)
 	}
 	filePath := files[0]
 
-	// Detect and send correct media type
 	if strings.HasSuffix(filePath, ".mp4") || strings.HasSuffix(filePath, ".mov") {
 		sendVideo(bot, chatID, replyTo, filePath)
 	} else if strings.HasSuffix(filePath, ".jpg") || strings.HasSuffix(filePath, ".png") || strings.HasSuffix(filePath, ".webp") {

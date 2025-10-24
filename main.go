@@ -25,9 +25,7 @@ const (
 	telegramMaxSize  = 50 * 1024 * 1024 // 50 MB
 )
 
-var (
-	sem = make(chan struct{}, 3) // Limit concurrent downloads
-)
+var sem = make(chan struct{}, 3) // limit concurrent downloads
 
 func main() {
 	_ = godotenv.Load()
@@ -48,12 +46,9 @@ func main() {
 	}
 	log.Printf("✅ Bot authorized as @%s", bot.Self.UserName)
 
-	// Start health server
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080" // default port
-	}
-	fmt.Println("Server running on port:", port)
+	// --- Start health server for Render ---
+	port := getenv("PORT", "8080")
+	startHealthServer(port)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -69,12 +64,15 @@ func main() {
 // ---------------------- Health Server ----------------------
 func startHealthServer(port string) {
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 	go func() {
-		log.Printf("✅ Health server running on port %s", port)
-		log.Fatal(http.ListenAndServe(":"+port, nil))
+		log.Printf("🌐 Health server running on port %s", port)
+		if err := http.ListenAndServe(":"+port, nil); err != nil {
+			log.Fatalf("Health server error: %v", err)
+		}
 	}()
 }
 

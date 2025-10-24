@@ -25,19 +25,19 @@ const (
 	telegramMaxSize  = 50 * 1024 * 1024 // 50 MB
 )
 
-var sem = make(chan struct{}, 3) // limit concurrent downloads
+var sem = make(chan struct{}, 3) // concurrent download limit
 
 func main() {
 	_ = godotenv.Load()
 
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
-		log.Fatal("BOT_TOKEN not set in environment")
+		log.Fatal("❌ BOT_TOKEN not set in environment")
 	}
 
 	downloadsDir := getenv("DOWNLOADS_DIR", defaultDownloads)
 	if err := os.MkdirAll(downloadsDir, 0o755); err != nil {
-		log.Fatalf("Failed to create downloads folder: %v", err)
+		log.Fatalf("Failed to create downloads dir: %v", err)
 	}
 
 	bot, err := tgbotapi.NewBotAPI(token)
@@ -46,8 +46,7 @@ func main() {
 	}
 	log.Printf("✅ Bot authorized as @%s", bot.Self.UserName)
 
-	// --- Start health server for Render ---
-	port := getenv("PORT", "8080")
+	port := getenv("PORT", "10000")
 	startHealthServer(port)
 
 	u := tgbotapi.NewUpdate(0)
@@ -61,22 +60,20 @@ func main() {
 	}
 }
 
-// ---------------------- Health Server ----------------------
+// ---------------------- HEALTH SERVER ----------------------
 func startHealthServer(port string) {
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 	go func() {
 		log.Printf("🌐 Health server running on port %s", port)
-		if err := http.ListenAndServe(":"+port, nil); err != nil {
-			log.Fatalf("Health server error: %v", err)
-		}
+		log.Fatal(http.ListenAndServe(":"+port, nil))
 	}()
 }
 
-// ---------------------- Bot Handlers ----------------------
+// ---------------------- MESSAGE HANDLER ----------------------
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, downloadsDir string) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
@@ -86,13 +83,14 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, downloadsDir str
 	chatID := msg.Chat.ID
 
 	if text == "/start" {
-		bot.Send(tgbotapi.NewMessage(chatID,
-			"👋 Salom!\n\n🎥 YouTube / TikTok / Instagram havolasini yuboring — men sizga video yoki rasm yuboraman."))
+		startMsg := "👋 Salom!\n🎥 Yuboring YouTube / TikTok / Instagram havolasini — men sizga video yoki rasm yuboraman."
+		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
 	}
 
 	links := extractSupportedLinks(text)
 	if len(links) == 0 {
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Faqat YouTube, Instagram yoki TikTok havolasini yuboring."))
 		return
 	}
 
@@ -103,49 +101,48 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, downloadsDir str
 		loadingMsg.ReplyToMessageID = msg.MessageID
 		sent, _ := bot.Send(loadingMsg)
 
-		go func(url string, chatID int64, replyToID, loadingMsgID int) {
+		go func(url string, chatID int64, replyTo, loadingID int) {
 			sem <- struct{}{}
 			files, fileType, cleanup, err := downloadURL(url, downloadsDir)
 			<-sem
-
 			defer cleanup()
 
-			bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: loadingMsgID})
+			bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: loadingID})
 
 			if err != nil {
-				log.Printf("Download error for %s: %v", url, err)
-				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi."))
+				log.Printf("Download error: %v", err)
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Qayta urinib ko‘ring."))
 				return
 			}
 
-			for _, filePath := range files {
-				sendFile(bot, chatID, filePath, fileType, replyToID)
-				_ = os.Remove(filePath)
+			for _, f := range files {
+				sendMedia(bot, chatID, replyTo, f, fileType)
+				_ = os.Remove(f)
 			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
 	}
 }
 
-// ---------------------- Utilities ----------------------
+// ---------------------- LINK HELPERS ----------------------
 func extractSupportedLinks(text string) []string {
-	regex := `(https?://[^\s]+)`
-	matches := regexp.MustCompile(regex).FindAllString(text, -1)
-	var links []string
-	for _, m := range matches {
-		if isSupportedLink(m) {
-			links = append(links, m)
+	re := regexp.MustCompile(`https?://[^\s]+`)
+	all := re.FindAllString(text, -1)
+	var valid []string
+	for _, l := range all {
+		if isSupported(l) {
+			valid = append(valid, l)
 		}
 	}
-	return links
+	return valid
 }
 
-func isSupportedLink(text string) bool {
-	text = strings.ToLower(text)
-	return strings.Contains(text, "youtube.com") ||
-		strings.Contains(text, "youtu.be") ||
-		strings.Contains(text, "tiktok.com") ||
-		strings.Contains(text, "instagram.com") ||
-		strings.Contains(text, "instagr.am")
+func isSupported(link string) bool {
+	l := strings.ToLower(link)
+	return strings.Contains(l, "youtube.com") ||
+		strings.Contains(l, "youtu.be") ||
+		strings.Contains(l, "instagram.com") ||
+		strings.Contains(l, "instagr.am") ||
+		strings.Contains(l, "tiktok.com")
 }
 
 func normalizeYouTubeShort(link string) string {
@@ -155,23 +152,18 @@ func normalizeYouTubeShort(link string) string {
 	return link
 }
 
-// ---------------------- Download ----------------------
+// ---------------------- DOWNLOADER ----------------------
 func downloadURL(url, downloadsDir string) ([]string, string, func(), error) {
-	uniqueID := time.Now().UnixNano()
-	tmpDir := filepath.Join(downloadsDir, fmt.Sprintf("%d", uniqueID))
-
+	uid := fmt.Sprintf("%d", time.Now().UnixNano())
+	tmpDir := filepath.Join(downloadsDir, uid)
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return nil, "", func() {}, fmt.Errorf("tmp dir create: %w", err)
+		return nil, "", func() {}, err
 	}
 
 	ffmpegPath := os.Getenv("FFMPEG_PATH")
 	ytDlpPath := getenv("YTDLP_PATH", "yt-dlp")
 
-	args := []string{
-		"--no-playlist",
-		"-o", filepath.Join(tmpDir, "%(title)s.%(ext)s"),
-		url,
-	}
+	args := []string{"--no-playlist", "-o", filepath.Join(tmpDir, "%(title)s.%(ext)s"), url}
 	if ffmpegPath != "" {
 		args = append([]string{"--ffmpeg-location", ffmpegPath}, args...)
 	}
@@ -179,69 +171,59 @@ func downloadURL(url, downloadsDir string) ([]string, string, func(), error) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 
-	out, err := runCommandCapture(ctx, ytDlpPath, args...)
-	log.Printf("yt-dlp output: %s", out)
+	out, err := runCommand(ctx, ytDlpPath, args...)
+	log.Println(out)
 	if err != nil {
-		return nil, "", func() { _ = os.RemoveAll(tmpDir) }, fmt.Errorf("yt-dlp failed: %w", err)
+		return nil, "", func() { os.RemoveAll(tmpDir) }, fmt.Errorf("yt-dlp failed: %v", err)
 	}
 
 	files, _ := filepath.Glob(filepath.Join(tmpDir, "*"))
 	if len(files) == 0 {
-		return nil, "", func() { _ = os.RemoveAll(tmpDir) }, fmt.Errorf("no media found")
+		return nil, "", func() { os.RemoveAll(tmpDir) }, fmt.Errorf("no files downloaded")
 	}
 
-	imageExts := []string{".jpg", ".jpeg", ".png", ".webp"}
 	fileType := "video"
-	if isAllImages(files, imageExts) {
+	if isAllImages(files) {
 		fileType = "photo"
 	}
 
 	for i, f := range files {
-		ext := strings.ToLower(filepath.Ext(f))
-		if ext == ".webp" {
-			jpgPath, convErr := convertWebPToJPG(f)
-			if convErr != nil {
-				log.Printf("webp convert failed: %v", convErr)
-				fileType = "document"
-				continue
+		if strings.HasSuffix(strings.ToLower(f), ".webp") {
+			jpg, err := convertWebPToJPG(f)
+			if err == nil {
+				files[i] = jpg
+				os.Remove(f)
 			}
-			_ = os.Remove(f)
-			files[i] = jpgPath
 		}
 	}
 
-	return files, fileType, func() { _ = os.RemoveAll(tmpDir) }, nil
+	return files, fileType, func() { os.RemoveAll(tmpDir) }, nil
 }
 
-func isAllImages(files []string, imageExts []string) bool {
+func runCommand(ctx context.Context, cmd string, args ...string) (string, error) {
+	c := exec.CommandContext(ctx, cmd, args...)
+	var buf bytes.Buffer
+	c.Stdout = &buf
+	c.Stderr = &buf
+	err := c.Run()
+	return buf.String(), err
+}
+
+func isAllImages(files []string) bool {
 	for _, f := range files {
-		ext := strings.ToLower(filepath.Ext(f))
-		found := false
-		for _, e := range imageExts {
-			if ext == e {
-				found = true
-				break
-			}
-		}
-		if !found {
+		switch strings.ToLower(filepath.Ext(f)) {
+		case ".jpg", ".jpeg", ".png", ".webp":
+			continue
+		default:
 			return false
 		}
 	}
 	return true
 }
 
-func runCommandCapture(ctx context.Context, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	var combined bytes.Buffer
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
-	err := cmd.Run()
-	return combined.String(), err
-}
-
-// ---------------------- Send files ----------------------
-func sendFile(bot *tgbotapi.BotAPI, chatID int64, path, fileType string, replyToMessageID int) {
-	info, err := os.Stat(path)
+// ---------------------- SENDER ----------------------
+func sendMedia(bot *tgbotapi.BotAPI, chatID int64, replyTo int, filePath string, fileType string) {
+	info, err := os.Stat(filePath)
 	if err != nil {
 		log.Printf("File stat error: %v", err)
 		return
@@ -250,35 +232,31 @@ func sendFile(bot *tgbotapi.BotAPI, chatID int64, path, fileType string, replyTo
 	switch fileType {
 	case "video":
 		if info.Size() > telegramMaxSize {
-			doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(path))
+			doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 			doc.Caption = "🎥 Mana videongiz!"
-			doc.ReplyToMessageID = replyToMessageID
+			doc.ReplyToMessageID = replyTo
 			bot.Send(doc)
-			return
-		}
-		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(path))
-		video.Caption = "🎥 Mana videongiz!"
-		video.ReplyToMessageID = replyToMessageID
-		if _, err := bot.Send(video); err != nil {
-			doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(path))
-			doc.Caption = "🎥 Mana videongiz!"
-			doc.ReplyToMessageID = replyToMessageID
-			bot.Send(doc)
+		} else {
+			video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+			video.Caption = "🎥 Mana videongiz!"
+			video.ReplyToMessageID = replyTo
+			bot.Send(video)
 		}
 	case "photo":
-		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(path))
+		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath)) // ✅ fixed call
 		photo.Caption = "📷 Mana rasm!"
-		photo.ReplyToMessageID = replyToMessageID
+		photo.ReplyToMessageID = replyTo
 		bot.Send(photo)
 	default:
-		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(path))
+		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 		doc.Caption = "📎 Mana fayl!"
-		doc.ReplyToMessageID = replyToMessageID
+		doc.ReplyToMessageID = replyTo
 		bot.Send(doc)
 	}
+	log.Printf("✅ Sent file: %s", filePath)
 }
 
-// ---------------------- WebP to JPG ----------------------
+// ---------------------- CONVERT WEBP TO JPG ----------------------
 func convertWebPToJPG(src string) (string, error) {
 	in, err := os.Open(src)
 	if err != nil {
@@ -301,14 +279,13 @@ func convertWebPToJPG(src string) (string, error) {
 	if err := jpeg.Encode(out, img, &jpeg.Options{Quality: 92}); err != nil {
 		return "", err
 	}
-
 	return dst, nil
 }
 
-// ---------------------- Env Helper ----------------------
+// ---------------------- ENV HELPER ----------------------
 func getenv(key, fallback string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		return v
+	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+		return val
 	}
 	return fallback
 }

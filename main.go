@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,273 +18,199 @@ import (
 	"golang.org/x/image/webp"
 )
 
+// ⚙️ Constants
 const (
-	commandTimeout   = 3 * time.Minute
-	defaultDownloads = "downloads"
-	telegramMaxSize  = 50 * 1024 * 1024 // 50 MB
+	commandTimeout = 3 * time.Minute
+	port           = "10000"
 )
 
-var sem = make(chan struct{}, 3) // concurrent download limit
+// ✅ Automatically add ffmpeg to PATH
+func init() {
+	ffmpegPath := `C:\Users\user\Desktop\ffmpeg-8.0-full_build\bin` // change if needed
+	os.Setenv("PATH", os.Getenv("PATH")+";"+ffmpegPath)
+}
 
 func main() {
 	_ = godotenv.Load()
 
-	token := os.Getenv("BOT_TOKEN")
-	if token == "" {
+	botToken := os.Getenv("BOT_TOKEN")
+	if botToken == "" {
 		log.Fatal("❌ BOT_TOKEN not set in environment")
 	}
 
-	downloadsDir := getenv("DOWNLOADS_DIR", defaultDownloads)
-	if err := os.MkdirAll(downloadsDir, 0o755); err != nil {
-		log.Fatalf("Failed to create downloads dir: %v", err)
+	bot, err := tgbotapi.NewBotAPI(botToken)
+	if err != nil {
+		log.Fatalf("❌ Failed to create bot: %v", err)
 	}
 
-	bot, err := tgbotapi.NewBotAPI(token)
-	if err != nil {
-		log.Fatalf("Bot init failed: %v", err)
-	}
 	log.Printf("✅ Bot authorized as @%s", bot.Self.UserName)
 
-	port := getenv("PORT", "10000")
-	startHealthServer(port)
+	// 🌐 Health check server for Render keepalive
+	go func() {
+		http.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintln(w, "✅ Bot is running")
+		})
+		log.Printf("🌐 Health server running on port %s", port)
+		log.Fatal(http.ListenAndServe(":"+port, nil))
+	}()
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
+	log.Println("🚀 Waiting for messages...")
+
 	for update := range updates {
-		if update.Message != nil {
-			go handleMessage(bot, update.Message, downloadsDir)
+		if update.Message == nil {
+			continue
 		}
+		go handleMessage(bot, update)
 	}
 }
 
-// ---------------------- HEALTH SERVER ----------------------
-func startHealthServer(port string) {
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
-	})
-	go func() {
-		log.Printf("🌐 Health server running on port %s", port)
-		log.Fatal(http.ListenAndServe(":"+port, nil))
-	}()
-}
-
-// ---------------------- MESSAGE HANDLER ----------------------
-func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, downloadsDir string) {
-	text := strings.TrimSpace(msg.Text)
+func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+	message := update.Message
+	text := strings.TrimSpace(message.Text)
 	if text == "" {
 		return
 	}
 
-	chatID := msg.Chat.ID
-
-	if text == "/start" {
-		startMsg := "👋 Salom!\n🎥 Yuboring YouTube / TikTok / Instagram havolasini — men sizga video yoki rasm yuboraman."
-		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
-		return
-	}
-
-	links := extractSupportedLinks(text)
-	if len(links) == 0 {
-		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Faqat YouTube, Instagram yoki TikTok havolasini yuboring."))
-		return
-	}
-
-	for _, link := range links {
-		link = normalizeYouTubeShort(link)
-
-		loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda...")
-		loadingMsg.ReplyToMessageID = msg.MessageID
-		sent, _ := bot.Send(loadingMsg)
-
-		go func(url string, chatID int64, replyTo, loadingID int) {
-			sem <- struct{}{}
-			files, fileType, cleanup, err := downloadURL(url, downloadsDir)
-			<-sem
-			defer cleanup()
-
-			bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: loadingID})
-
-			if err != nil {
-				log.Printf("Download error: %v", err)
-				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Qayta urinib ko‘ring."))
-				return
-			}
-
-			for _, f := range files {
-				sendMedia(bot, chatID, replyTo, f, fileType)
-				_ = os.Remove(f)
-			}
-		}(link, chatID, msg.MessageID, sent.MessageID)
+	if strings.HasPrefix(text, "http") {
+		go processLink(bot, message.Chat.ID, message.MessageID, text)
+	} else if text == "/start" {
+		startMsg := "👋 Salom!\n\n🎥 YouTube / TikTok / Instagram havolasini yuboring — men sizga video yoki rasm yuboraman."
+		bot.Send(tgbotapi.NewMessage(message.Chat.ID, startMsg))
 	}
 }
 
-// ---------------------- LINK HELPERS ----------------------
-func extractSupportedLinks(text string) []string {
-	re := regexp.MustCompile(`https?://[^\s]+`)
-	all := re.FindAllString(text, -1)
-	var valid []string
-	for _, l := range all {
-		if isSupported(l) {
-			valid = append(valid, l)
+func processLink(bot *tgbotapi.BotAPI, chatID int64, replyTo int, url string) {
+	// ⏳ Send "Yuklanmoqda..." message
+	loading := tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda...")
+	loading.ReplyToMessageID = replyTo
+	sentMsg, _ := bot.Send(loading)
+
+	defer func() {
+		// 🧹 Delete "Yuklanmoqda..." message after done
+		delMsg := tgbotapi.DeleteMessageConfig{
+			ChatID:    chatID,
+			MessageID: sentMsg.MessageID,
 		}
-	}
-	return valid
-}
-
-func isSupported(link string) bool {
-	l := strings.ToLower(link)
-	return strings.Contains(l, "youtube.com") ||
-		strings.Contains(l, "youtu.be") ||
-		strings.Contains(l, "instagram.com") ||
-		strings.Contains(l, "instagr.am") ||
-		strings.Contains(l, "tiktok.com")
-}
-
-func normalizeYouTubeShort(link string) string {
-	if strings.Contains(link, "youtube.com/shorts/") {
-		return strings.Replace(link, "shorts/", "watch?v=", 1)
-	}
-	return link
-}
-
-// ---------------------- DOWNLOADER ----------------------
-func downloadURL(url, downloadsDir string) ([]string, string, func(), error) {
-	uid := fmt.Sprintf("%d", time.Now().UnixNano())
-	tmpDir := filepath.Join(downloadsDir, uid)
-	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return nil, "", func() {}, err
-	}
-
-	ffmpegPath := os.Getenv("FFMPEG_PATH")
-	ytDlpPath := getenv("YTDLP_PATH", "yt-dlp")
-
-	args := []string{"--no-playlist", "-o", filepath.Join(tmpDir, "%(title)s.%(ext)s"), url}
-	if ffmpegPath != "" {
-		args = append([]string{"--ffmpeg-location", ffmpegPath}, args...)
-	}
+		bot.Request(delMsg)
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 
-	out, err := runCommand(ctx, ytDlpPath, args...)
-	log.Println(out)
+	os.MkdirAll("downloads", 0755)
+	outputFile := filepath.Join("downloads", "output.%(ext)s")
+
+	cmd := exec.CommandContext(ctx, "yt-dlp", "-f", "best", "-o", outputFile, url)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
 	if err != nil {
-		return nil, "", func() { os.RemoveAll(tmpDir) }, fmt.Errorf("yt-dlp failed: %v", err)
-	}
-
-	files, _ := filepath.Glob(filepath.Join(tmpDir, "*"))
-	if len(files) == 0 {
-		return nil, "", func() { os.RemoveAll(tmpDir) }, fmt.Errorf("no files downloaded")
-	}
-
-	fileType := "video"
-	if isAllImages(files) {
-		fileType = "photo"
-	}
-
-	for i, f := range files {
-		if strings.HasSuffix(strings.ToLower(f), ".webp") {
-			jpg, err := convertWebPToJPG(f)
-			if err == nil {
-				files[i] = jpg
-				os.Remove(f)
-			}
-		}
-	}
-
-	return files, fileType, func() { os.RemoveAll(tmpDir) }, nil
-}
-
-func runCommand(ctx context.Context, cmd string, args ...string) (string, error) {
-	c := exec.CommandContext(ctx, cmd, args...)
-	var buf bytes.Buffer
-	c.Stdout = &buf
-	c.Stderr = &buf
-	err := c.Run()
-	return buf.String(), err
-}
-
-func isAllImages(files []string) bool {
-	for _, f := range files {
-		switch strings.ToLower(filepath.Ext(f)) {
-		case ".jpg", ".jpeg", ".png", ".webp":
-			continue
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// ---------------------- SENDER ----------------------
-func sendMedia(bot *tgbotapi.BotAPI, chatID int64, replyTo int, filePath string, fileType string) {
-	info, err := os.Stat(filePath)
-	if err != nil {
-		log.Printf("File stat error: %v", err)
+		log.Printf("❌ Download error: %v | %s", err, stderr.String())
+		sendError(bot, chatID, replyTo)
 		return
 	}
 
-	switch fileType {
-	case "video":
-		if info.Size() > telegramMaxSize {
-			doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
-			doc.Caption = "🎥 Mana videongiz!"
-			doc.ReplyToMessageID = replyTo
-			bot.Send(doc)
-		} else {
-			video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
-			video.Caption = "🎥 Mana videongiz!"
-			video.ReplyToMessageID = replyTo
-			bot.Send(video)
+	files, _ := filepath.Glob("downloads/output.*")
+	if len(files) == 0 {
+		sendError(bot, chatID, replyTo)
+		return
+	}
+
+	filePath := files[0]
+
+	// Detect type
+	if strings.HasSuffix(filePath, ".mp4") || strings.HasSuffix(filePath, ".mov") {
+		sendVideo(bot, chatID, replyTo, filePath)
+	} else if strings.HasSuffix(filePath, ".jpg") || strings.HasSuffix(filePath, ".png") || strings.HasSuffix(filePath, ".webp") {
+		sendImage(bot, chatID, replyTo, filePath)
+	} else {
+		sendAudio(bot, chatID, replyTo, filePath)
+	}
+
+	os.Remove(filePath)
+}
+
+func sendVideo(bot *tgbotapi.BotAPI, chatID int64, replyTo int, filePath string) {
+	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+	video.ReplyToMessageID = replyTo
+	video.Caption = "🎥 Mana videongiz!"
+	_, err := bot.Send(video)
+	if err != nil {
+		log.Printf("❌ Video send error: %v", err)
+		sendError(bot, chatID, replyTo)
+	}
+}
+
+func sendAudio(bot *tgbotapi.BotAPI, chatID int64, replyTo int, filePath string) {
+	audioPath := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".mp3"
+
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-vn", "-acodec", "libmp3lame", "-ab", "192k", audioPath)
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("❌ FFmpeg conversion error: %v", err)
+		sendError(bot, chatID, replyTo)
+		return
+	}
+
+	audio := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(audioPath))
+	audio.ReplyToMessageID = replyTo
+	audio.Caption = "🎧 Mana audio!"
+	_, err = bot.Send(audio)
+	if err != nil {
+		log.Printf("❌ Audio send error: %v", err)
+		sendError(bot, chatID, replyTo)
+	}
+
+	os.Remove(audioPath)
+}
+
+func sendImage(bot *tgbotapi.BotAPI, chatID int64, replyTo int, filePath string) {
+	if strings.HasSuffix(filePath, ".webp") {
+		img, err := os.Open(filePath)
+		if err != nil {
+			sendError(bot, chatID, replyTo)
+			return
 		}
-	case "photo":
-		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath)) // ✅ fixed call
-		photo.Caption = "📷 Mana rasm!"
-		photo.ReplyToMessageID = replyTo
-		bot.Send(photo)
-	default:
-		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
-		doc.Caption = "📎 Mana fayl!"
-		doc.ReplyToMessageID = replyTo
-		bot.Send(doc)
+		defer img.Close()
+
+		webpImg, err := webp.Decode(img)
+		if err != nil {
+			sendError(bot, chatID, replyTo)
+			return
+		}
+
+		jpgPath := strings.TrimSuffix(filePath, ".webp") + ".jpg"
+		out, err := os.Create(jpgPath)
+		if err != nil {
+			sendError(bot, chatID, replyTo)
+			return
+		}
+		defer out.Close()
+
+		if err := jpeg.Encode(out, webpImg, nil); err != nil {
+			sendError(bot, chatID, replyTo)
+			return
+		}
+		filePath = jpgPath
 	}
-	log.Printf("✅ Sent file: %s", filePath)
+
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
+	photo.ReplyToMessageID = replyTo
+	photo.Caption = "📷 Mana rasm!"
+	_, err := bot.Send(photo)
+	if err != nil {
+		log.Printf("❌ Photo send error: %v", err)
+		sendError(bot, chatID, replyTo)
+	}
 }
 
-// ---------------------- CONVERT WEBP TO JPG ----------------------
-func convertWebPToJPG(src string) (string, error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return "", err
-	}
-	defer in.Close()
-
-	img, err := webp.Decode(in)
-	if err != nil {
-		return "", err
-	}
-
-	dst := strings.TrimSuffix(src, filepath.Ext(src)) + ".jpg"
-	out, err := os.Create(dst)
-	if err != nil {
-		return "", err
-	}
-	defer out.Close()
-
-	if err := jpeg.Encode(out, img, &jpeg.Options{Quality: 92}); err != nil {
-		return "", err
-	}
-	return dst, nil
-}
-
-// ---------------------- ENV HELPER ----------------------
-func getenv(key, fallback string) string {
-	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
-		return val
-	}
-	return fallback
+func sendError(bot *tgbotapi.BotAPI, chatID int64, replyTo int) {
+	msg := tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Qayta urinib ko‘ring.")
+	msg.ReplyToMessageID = replyTo
+	bot.Send(msg)
 }

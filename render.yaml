@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: telegram-bot
+    env: go
+    plan: free
+    buildCommand: |
+      apt-get update && apt-get install -y python3 python3-pip ffmpeg && pip install --upgrade yt-dlp && go mod tidy && go build -o app
+    startCommand: ./app
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PORT
+        value: 10000

@@ -2,9 +2,9 @@ services:
   - type: web
     name: telegram-downloader
     env: go
-    buildCommand: |
-      apt-get update
-      apt-get install -y python3 python3-pip ffmpeg
-      pip3 install -U yt-dlp
-      go build -o app .
-    startCommand: ./app
+    buildCommand: go build -o app .
+    startCommand: |
+      apt-get update && \
+      apt-get install -y python3 python3-pip ffmpeg && \
+      pip3 install -U yt-dlp && \
+      ./app

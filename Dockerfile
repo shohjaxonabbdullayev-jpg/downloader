@@ -1,8 +1,9 @@
-# Use stable Go version
-FROM golang:1.24-bullseye
+# Use stable Go + Debian Bookworm (newer repo than bullseye)
+FROM golang:1.24-bookworm
 
-# Install yt-dlp and ffmpeg
-RUN apt-get update && apt-get install -y ffmpeg curl && \
+# Install dependencies: ffmpeg + curl + yt-dlp
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
     curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
     chmod a+rx /usr/local/bin/yt-dlp && \
     yt-dlp --version
@@ -17,7 +18,7 @@ RUN go mod download
 # Copy app source code
 COPY . .
 
-# Build
+# Build binary
 RUN go build -o main .
 
 # Expose port

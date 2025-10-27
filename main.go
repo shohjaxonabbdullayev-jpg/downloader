@@ -2,55 +2,57 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"fmt"
-	"image/jpeg"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
-	"golang.org/x/image/webp"
 )
 
-// ⚙️ Constants
-const (
-	commandTimeout = 3 * time.Minute
-	defaultPort    = "10000"
-)
+const ytDlpPath = "yt-dlp"
 
-// ✅ Automatically add ffmpeg to PATH (adjust if needed)
-func init() {
-	ffmpegPath := `C:\Users\user\Desktop\ffmpeg-8.0-full_build\bin`
-	os.Setenv("PATH", os.Getenv("PATH")+";"+ffmpegPath)
-}
+var (
+	ffmpegPath   = "" // ffmpeg Render'da tizimda o‘rnatilgan
+	downloadsDir = "downloads"
+	sem          = make(chan struct{}, 3) // bir vaqtda maksimal 3 ta yuklab olish
+)
 
 func main() {
-	err := godotenv.Load()
+	// .env yuklash (faqat lokal ishda)
+	if err := godotenv.Load(); err != nil {
+		log.Println("⚠️ .env fayl topilmadi — tizimdagi o‘zgaruvchilar ishlatiladi")
+	}
+
+	token := os.Getenv("BOT_TOKEN")
+	if token == "" {
+		log.Fatal("❌ BOT_TOKEN muhit o‘zgaruvchisi o‘rnatilmagan")
+	}
+
+	// Yuklab olish papkasini tayyorlash
+	os.RemoveAll(downloadsDir)
+	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
+		log.Fatalf("❌ downloads papkasi yaratilolmadi: %v", err)
+	}
+
+	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
-		log.Println("⚠️ No .env file found, continuing...")
+		log.Fatalf("❌ Telegram bot ishga tushmadi: %v", err)
 	}
 
-	botToken := os.Getenv("BOT_TOKEN")
-	if botToken == "" {
-		log.Fatal("❌ BOT_TOKEN not set in environment")
-	}
+	log.Printf("🤖 Bot ishga tushdi: @%s", bot.Self.UserName)
 
-	bot, err := tgbotapi.NewBotAPI(botToken)
-	if err != nil {
-		log.Fatalf("❌ Failed to create bot: %v", err)
-	}
+	// Fon jarayonlar
+	go startHealthServer()
+	go keepAlive()
 
-	log.Printf("✅ Bot authorized as @%s", bot.Self.UserName)
-
-	// 🟢 Start ping server for Render
-	startPingServer()
-
+	// Telegram xabarlarini olish
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
@@ -59,178 +61,194 @@ func main() {
 		if update.Message == nil {
 			continue
 		}
-
-		text := update.Message.Text
-		if strings.HasPrefix(text, "http") {
-			go handleDownload(bot, update.Message.Chat.ID, update.Message.MessageID, text)
-		}
+		go handleMessage(bot, update.Message)
 	}
 }
 
-// 🌐 Health check server + self-ping to stay awake
-func startPingServer() {
+// ===================== XABARLARNI QABUL QILISH =====================
+func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		return
+	}
+	chatID := msg.Chat.ID
+
+	if text == "/start" {
+		startMsg := "👋 Assalomu alaykum!\n\n🎥 Menga *YouTube* yoki *Instagram* videoning linkini yuboring, men esa sizga videoni yuboraman.\n\nMasalan:\n`https://www.youtube.com/watch?v=abc123`\n`https://www.instagram.com/reel/xyz456/`"
+		m := tgbotapi.NewMessage(chatID, startMsg)
+		m.ParseMode = "Markdown"
+		bot.Send(m)
+		return
+	}
+
+	links := extractSupportedLinks(text)
+	if len(links) == 0 {
+		// faqat YouTube va Instagram linklarini qabul qiladi
+		return
+	}
+
+	for _, link := range links {
+		if strings.Contains(link, "youtube.com/shorts/") {
+			link = strings.Replace(link, "shorts/", "watch?v=", 1)
+		}
+
+		waitMsg := tgbotapi.NewMessage(chatID, "⏳ Video yuklanmoqda, biroz kuting...")
+		waitMsg.ReplyToMessageID = msg.MessageID
+		sent, _ := bot.Send(waitMsg)
+
+		go func(url string, chatID int64, replyToID, waitMsgID int) {
+			sem <- struct{}{}
+			files, err := downloadVideo(url)
+			<-sem
+
+			// "yuklanmoqda..." xabarini o‘chirish
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+				ChatID:    chatID,
+				MessageID: waitMsgID,
+			})
+
+			if err != nil {
+				log.Printf("❌ Yuklab olishda xato (%s): %v", url, err)
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Videoni yuklab bo‘lmadi. Ehtimol link xato yoki maxfiy hisob."))
+				return
+			}
+
+			sendVideo(bot, chatID, files[0], replyToID)
+
+			for _, f := range files {
+				os.Remove(f)
+			}
+		}(link, chatID, msg.MessageID, sent.MessageID)
+	}
+}
+
+// ===================== LINKNI AJRATISH =====================
+func extractSupportedLinks(text string) []string {
+	regex := `(https?://[^\s]+)`
+	matches := regexp.MustCompile(regex).FindAllString(text, -1)
+	var links []string
+	for _, m := range matches {
+		if isSupportedLink(m) {
+			links = append(links, m)
+		}
+	}
+	return links
+}
+
+func isSupportedLink(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "youtube.com") ||
+		strings.Contains(text, "youtu.be") ||
+		strings.Contains(text, "instagram.com") ||
+		strings.Contains(text, "instagr.am")
+}
+
+// ===================== VIDEO YUKLASH =====================
+func downloadVideo(url string) ([]string, error) {
+	uniqueID := time.Now().UnixNano()
+	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
+
+	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
+
+	args := []string{
+		"--no-playlist",
+		"--no-warnings",
+		"--merge-output-format", "mp4",
+		"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+		"--add-header", "Referer:https://www.instagram.com/",
+		"--add-header", "Accept-Language:uz-UZ,uz;q=0.9,en;q=0.8",
+		"--no-check-certificates",
+		"-o", outputTemplate,
+	}
+
+	// Agar cookies.txt mavjud bo‘lsa, qo‘shamiz
+	if _, err := os.Stat("cookies.txt"); err == nil {
+		args = append(args, "--cookies", "cookies.txt")
+	}
+
+	if ffmpegPath != "" {
+		args = append(args, "--ffmpeg-location", ffmpegPath)
+	}
+
+	if isYouTube {
+		args = append(args, "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]")
+	} else {
+		args = append(args, "-f", "bestvideo+bestaudio/best")
+	}
+
+	args = append(args, url)
+
+	out, err := runCommandCapture(ytDlpPath, args...)
+	log.Printf("🧾 yt-dlp chiqishi (%s):\n%s", url, out)
+
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp ishlamay qoldi: %v", err)
+	}
+
+	files, _ := filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
+	if len(files) == 0 {
+		log.Println("⚠️ Fayl topilmadi, qayta tekshirilmoqda...")
+		time.Sleep(2 * time.Second)
+		files, _ = filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
+		if len(files) == 0 {
+			return nil, fmt.Errorf("⚠️ Yuklab olindi, lekin fayl topilmadi")
+		}
+	}
+
+	return files, nil
+}
+
+// ===================== BUYRUQ ISHLATISH =====================
+func runCommandCapture(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	err := cmd.Run()
+	return combined.String(), err
+}
+
+// ===================== VIDEO YUBORISH =====================
+func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
+	msg := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+	msg.Caption = "🎥 Video tayyor!"
+	msg.ReplyToMessageID = replyToMessageID
+	bot.Send(msg)
+}
+
+// ===================== HEALTH TEKSHIRUV =====================
+func startHealthServer() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = defaultPort
+		port = "10000" // lokal test uchun
 	}
 
-	http.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintln(w, "✅ Bot is running")
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "ok")
 	})
 
-	go func() {
-		log.Printf("🌐 Health server running on port %s", port)
-		if err := http.ListenAndServe(":"+port, nil); err != nil {
-			log.Fatalf("Ping server error: %v", err)
-		}
-	}()
-
-	// 🕐 Self-ping every 10 minutes
-	go func() {
-		ticker := time.NewTicker(10 * time.Minute)
-		defer ticker.Stop()
-
-		url := "http://localhost:" + port + "/" // ping own server
-
-		for range ticker.C {
-			resp, err := http.Get(url)
-			if err != nil {
-				log.Printf("⚠️ Self-ping failed: %v", err)
-				continue
-			}
-			resp.Body.Close()
-			log.Println("🌐 Self-ping sent to keep awake")
-		}
-	}()
+	log.Printf("🌐 Health check server %s-portda ishga tushdi", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
-// 🎬 Main download handler
-func handleDownload(bot *tgbotapi.BotAPI, chatID int64, replyTo int, url string) {
-	waitMsg := tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda...")
-	waitMsg.ReplyToMessageID = replyTo
-	sent, _ := bot.Send(waitMsg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-	defer cancel()
-
-	os.MkdirAll("downloads", 0755)
-	outputFile := filepath.Join("downloads", "output.%(ext)s")
-
-	cmd := exec.CommandContext(ctx, "yt-dlp", "-f", "best", "-o", outputFile, url)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		log.Printf("❌ Download error: %v | %s", err, stderr.String())
-		sendError(bot, chatID, replyTo)
-		deleteMsg(bot, chatID, sent.MessageID)
+// ===================== RENDER UCHUN UYQON TURI =====================
+func keepAlive() {
+	renderURL := os.Getenv("RENDER_EXTERNAL_URL")
+	if renderURL == "" {
+		log.Println("⚠️ RENDER_EXTERNAL_URL belgilanmagan — ping yuborilmaydi")
 		return
 	}
 
-	files, _ := filepath.Glob("downloads/output.*")
-	if len(files) == 0 {
-		sendError(bot, chatID, replyTo)
-		deleteMsg(bot, chatID, sent.MessageID)
-		return
-	}
-	filePath := files[0]
-
-	if strings.HasSuffix(filePath, ".mp4") || strings.HasSuffix(filePath, ".mov") {
-		sendVideo(bot, chatID, replyTo, filePath)
-	} else if strings.HasSuffix(filePath, ".jpg") || strings.HasSuffix(filePath, ".png") || strings.HasSuffix(filePath, ".webp") {
-		sendImage(bot, chatID, replyTo, filePath)
-	} else {
-		sendAudio(bot, chatID, replyTo, filePath)
-	}
-
-	os.Remove(filePath)
-	deleteMsg(bot, chatID, sent.MessageID)
-}
-
-// 🎥 Send video
-func sendVideo(bot *tgbotapi.BotAPI, chatID int64, replyTo int, filePath string) {
-	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
-	video.ReplyToMessageID = replyTo
-	_, err := bot.Send(video)
-	if err != nil {
-		log.Printf("❌ Video send error: %v", err)
-		sendError(bot, chatID, replyTo)
-	}
-}
-
-// 🎧 Send audio
-func sendAudio(bot *tgbotapi.BotAPI, chatID int64, replyTo int, filePath string) {
-	audioPath := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".mp3"
-
-	cmd := exec.Command("ffmpeg", "-i", filePath, "-vn", "-acodec", "libmp3lame", "-ab", "192k", audioPath)
-	err := cmd.Run()
-	if err != nil {
-		log.Printf("❌ FFmpeg conversion error: %v", err)
-		sendError(bot, chatID, replyTo)
-		return
-	}
-
-	audio := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(audioPath))
-	audio.ReplyToMessageID = replyTo
-	_, err = bot.Send(audio)
-	if err != nil {
-		log.Printf("❌ Audio send error: %v", err)
-		sendError(bot, chatID, replyTo)
-	}
-
-	os.Remove(audioPath)
-}
-
-// 🖼️ Send image
-func sendImage(bot *tgbotapi.BotAPI, chatID int64, replyTo int, filePath string) {
-	if strings.HasSuffix(filePath, ".webp") {
-		img, err := os.Open(filePath)
+	for {
+		time.Sleep(5 * time.Minute)
+		url := fmt.Sprintf("https://%s/healthz", renderURL)
+		resp, err := http.Get(url)
 		if err != nil {
-			sendError(bot, chatID, replyTo)
-			return
+			log.Printf("⚠️ Ping yuborishda xato: %v", err)
+			continue
 		}
-		defer img.Close()
-
-		webpImg, err := webp.Decode(img)
-		if err != nil {
-			sendError(bot, chatID, replyTo)
-			return
-		}
-
-		jpgPath := strings.TrimSuffix(filePath, ".webp") + ".jpg"
-		out, err := os.Create(jpgPath)
-		if err != nil {
-			sendError(bot, chatID, replyTo)
-			return
-		}
-		defer out.Close()
-
-		if err := jpeg.Encode(out, webpImg, nil); err != nil {
-			sendError(bot, chatID, replyTo)
-			return
-		}
-		filePath = jpgPath
+		resp.Body.Close()
+		log.Printf("💓 Render uyg‘oq holatda (%s)", url)
 	}
-
-	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
-	photo.ReplyToMessageID = replyTo
-	_, err := bot.Send(photo)
-	if err != nil {
-		log.Printf("❌ Photo send error: %v", err)
-		sendError(bot, chatID, replyTo)
-	}
-}
-
-// 🗑️ Delete “Yuklanmoqda...” message
-func deleteMsg(bot *tgbotapi.BotAPI, chatID int64, messageID int) {
-	del := tgbotapi.NewDeleteMessage(chatID, messageID)
-	bot.Request(del)
-}
-
-// ⚠️ Send error message
-func sendError(bot *tgbotapi.BotAPI, chatID int64, replyTo int) {
-	msg := tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Qayta urinib ko‘ring.")
-	msg.ReplyToMessageID = replyTo
-	bot.Send(msg)
 }

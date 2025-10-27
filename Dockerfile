@@ -1,28 +1,33 @@
-# Use lightweight Go image based on Debian Bookworm
+# ===================== Base image =====================
 FROM golang:1.24-bookworm
 
-# Install Python 3.11, ffmpeg, curl, yt-dlp
+# ===================== Install dependencies =====================
 RUN apt-get update && apt-get install -y \
-    python3.11 python3.11-venv python3-pip ffmpeg curl && \
-    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
-    chmod a+rx /usr/local/bin/yt-dlp && \
-    python3.11 -m pip install --upgrade pip
+    ffmpeg \
+    curl \
+    python3-pip \
+    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp \
+    && python3 -m pip install --upgrade pip
 
-# Set working directory
+# ===================== Set working directory =====================
 WORKDIR /app
 
-# Copy Go modules first (for caching)
+# ===================== Copy Go modules and download dependencies =====================
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the app and cookies.txt
+# ===================== Copy the app and cookies.txt =====================
 COPY . .
 
-# Ensure downloads directory exists
+# ===================== Ensure downloads directory exists =====================
 RUN mkdir -p downloads
 
-# Build the Go app
+# ===================== Build the Go app =====================
 RUN go build -o main .
 
+# ===================== Expose port =====================
 EXPOSE 10000
+
+# ===================== Run app =====================
 CMD ["./main"]

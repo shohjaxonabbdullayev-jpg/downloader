@@ -1,11 +1,13 @@
-# Use stable Go + Debian Bookworm (newer repo than bullseye)
+# Use stable Go + Debian Bookworm (modern and compatible)
 FROM golang:1.24-bookworm
 
-# Install dependencies: ffmpeg + curl + yt-dlp
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
-    chmod a+rx /usr/local/bin/yt-dlp && \
+# Install dependencies: Python 3.11+, ffmpeg, curl
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip ffmpeg curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install yt-dlp via pip (Python ≥3.10 required)
+RUN pip3 install --no-cache-dir yt-dlp && \
     yt-dlp --version
 
 # Set working directory
@@ -15,14 +17,14 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy app source code
+# Copy all application files
 COPY . .
 
-# Build binary
+# Build your Go binary
 RUN go build -o main .
 
-# Expose port
+# Expose the port your app uses
 EXPOSE 10000
 
-# Run the app
+# Start the app
 CMD ["./main"]

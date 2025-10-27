@@ -1,24 +1,14 @@
 # Use lightweight Go image
 FROM golang:1.24-bullseye
 
-# Install Python3, pip, ffmpeg, curl and ca-certificates safely
+# Install dependencies: python3, pip, ffmpeg, curl
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        python3 \
-        python3-distutils \
-        python3-apt \
-        python3-pip \
-        ffmpeg \
-        curl \
-        ca-certificates \
-        wget \
-        git \
-    && python3 -m ensurepip \
-    && python3 -m pip install --upgrade pip setuptools wheel \
-    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+        python3 python3-venv python3-pip ffmpeg curl ca-certificates && \
+    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
+    chmod a+rx /usr/local/bin/yt-dlp && \
+    python3 -m pip install --upgrade pip setuptools wheel && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
@@ -27,7 +17,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the app and cookies.txt (cookies.txt should be in .gitignore)
+# Copy the app and cookies.txt
 COPY . .
 
 # Ensure downloads directory exists

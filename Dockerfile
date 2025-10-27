@@ -1,5 +1,5 @@
-# Use latest stable Go image
-FROM golang:1.25-bullseye
+# Use stable Go version
+FROM golang:1.24-bullseye
 
 # Install yt-dlp and ffmpeg
 RUN apt-get update && apt-get install -y ffmpeg curl && \

@@ -1,10 +1,12 @@
-# Use lightweight Go image
+# Use lightweight Go image as base
 FROM golang:1.24-bullseye
 
-# Install yt-dlp and ffmpeg
-RUN apt-get update && apt-get install -y ffmpeg curl && \
+# Install Python 3.11, yt-dlp, ffmpeg, curl
+RUN apt-get update && apt-get install -y \
+    python3.11 python3.11-venv python3-pip ffmpeg curl && \
     curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
-    chmod a+rx /usr/local/bin/yt-dlp
+    chmod a+rx /usr/local/bin/yt-dlp && \
+    python3.11 -m pip install --upgrade pip
 
 # Set working directory
 WORKDIR /app
@@ -13,7 +15,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the app and cookies
+# Copy the app and cookies.txt
 COPY . .
 
 # Ensure downloads directory exists

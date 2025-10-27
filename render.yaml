@@ -1,13 +1,13 @@
 services:
   - type: web
-    name: telegram-bot
-    env: docker
+    name: downloader-bot
+    env: go
     plan: free
-    dockerfilePath: ./Dockerfile
-    disk:
-      name: downloads
-      mountPath: /app/downloads
-      sizeGB: 1
+    autoDeploy: true
+    buildCommand: go build -o main .
+    startCommand: ./main
     envVars:
       - key: BOT_TOKEN
         sync: false
+      - key: PORT
+        value: 10000

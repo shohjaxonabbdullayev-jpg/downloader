@@ -1,0 +1,4 @@
+# Netscape HTTP Cookie File
+# https://curl.se/docs/http-cookies.html
+.instagram.com	TRUE	/	FALSE	1700000000	sessionid	123456789%3Aabcdef
+.instagram.com	TRUE	/	FALSE	1700000000	ds_user_id	123456789

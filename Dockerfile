@@ -1,7 +1,7 @@
-# Use lightweight Go image as base
-FROM golang:1.24-bullseye
+# Use lightweight Go image based on Debian Bookworm
+FROM golang:1.24-bookworm
 
-# Install Python 3.11, yt-dlp, ffmpeg, curl
+# Install Python 3.11, ffmpeg, curl, yt-dlp
 RUN apt-get update && apt-get install -y \
     python3.11 python3.11-venv python3-pip ffmpeg curl && \
     curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \

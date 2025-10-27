@@ -1,18 +1,13 @@
 services:
   - type: web
     name: telegram-bot
-    env: go
-    buildCommand: |
-      apt-get update && \
-      apt-get install -y ffmpeg curl && \
-      curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
-      chmod +x /usr/local/bin/yt-dlp && \
-      go build -tags netgo -ldflags '-s -w' -o app
-    startCommand: ./app
-    envVars:
-      - key: BOT_TOKEN
-        sync: false
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
     disk:
       name: downloads
       mountPath: /app/downloads
       sizeGB: 1
+    envVars:
+      - key: BOT_TOKEN
+        sync: false

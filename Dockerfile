@@ -2,9 +2,9 @@
 FROM golang:1.22-alpine AS builder
 
 # Install build dependencies
-RUN apk add --no-cache git ca-certificates ffmpeg python3 py3-pip && update-ca-certificates
+RUN apk add --no-cache git ca-certificates ffmpeg python3 py3-pip py3-wheel py3-setuptools && update-ca-certificates
 
-# Install yt-dlp globally
+# Install yt-dlp globally (for use during build)
 RUN pip install --no-cache-dir yt-dlp
 
 WORKDIR /app
@@ -14,29 +14,26 @@ ENV GOTOOLCHAIN=go1.24.4
 ENV GOPROXY=https://proxy.golang.org,direct
 ENV GOSUMDB=sum.golang.org
 
-# Copy dependency files
+# Copy and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy and build
+# Copy source code
 COPY . .
+
+# Build app
 RUN go build -o main .
 
-# --- FINAL STAGE ---
+# ---- Final Runtime Stage ----
 FROM alpine:3.19
 
-# Install runtime dependencies
-RUN apk add --no-cache \
-    ffmpeg \
-    python3 \
-    py3-pip \
-    ca-certificates \
-    && update-ca-certificates
+# Install runtime deps
+RUN apk add --no-cache ffmpeg python3 py3-pip py3-wheel py3-setuptools ca-certificates && update-ca-certificates
 
-# Some Alpine versions require this symlink for `python`
+# Symlink python (some scripts use it)
 RUN ln -sf python3 /usr/bin/python
 
-# Install yt-dlp using pip
+# Install yt-dlp again in final image
 RUN pip install --no-cache-dir yt-dlp
 
 WORKDIR /app

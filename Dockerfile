@@ -9,29 +9,35 @@ RUN pip install --no-cache-dir yt-dlp
 
 WORKDIR /app
 
-# Ensure correct Go toolchain for your version
+# Ensure correct Go toolchain
 ENV GOTOOLCHAIN=go1.24.4
 ENV GOPROXY=https://proxy.golang.org,direct
 ENV GOSUMDB=sum.golang.org
 
 # Copy dependency files
 COPY go.mod go.sum ./
-
-# Download Go dependencies
 RUN go mod download
 
-# Copy the source code
+# Copy and build
 COPY . .
-
-# Build Go binary
 RUN go build -o main .
 
-# Final minimal image
-FROM alpine:latest
+# --- FINAL STAGE ---
+FROM alpine:3.19
 
-# Install only runtime dependencies
-RUN apk add --no-cache ffmpeg python3 py3-pip ca-certificates && update-ca-certificates \
-    && pip install --no-cache-dir yt-dlp
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ffmpeg \
+    python3 \
+    py3-pip \
+    ca-certificates \
+    && update-ca-certificates
+
+# Some Alpine versions require this symlink for `python`
+RUN ln -sf python3 /usr/bin/python
+
+# Install yt-dlp using pip
+RUN pip install --no-cache-dir yt-dlp
 
 WORKDIR /app
 COPY --from=builder /app/main .

@@ -1,31 +1,28 @@
 # --- STAGE 1: Build the Go application ---
-# Use a full Go image for compilation
-FROM golang:1.22 AS builder
+FROM golang:1.24.4 AS builder
 
 WORKDIR /app
 
-# CRITICAL FIX 1: Install C dependencies needed by CGO for certain Go libraries.
-# This prevents linker errors during the build stage.
+# Install build tools (needed for CGO and linking)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# CRITICAL FIX 2: Copy the Go module files first.
+# Copy Go module files and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the source code (main.go, etc.)
+# Copy the source code
 COPY . .
 
-# Build the Go binary (removing CGO_ENABLED=0 to support telegram-bot-api)
+# Build the Go binary
 RUN GOOS=linux go build -o /bot-app .
 
-# --- STAGE 2: Create the final production image ---
-# Use a minimal base image that is small and secure
+# --- STAGE 2: Create the final image ---
 FROM debian:bookworm-slim
 
-# Install system dependencies: ffmpeg (for video processing) and python3/pip (for yt-dlp)
+# Install ffmpeg + Python + pip (for yt-dlp)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -35,19 +32,17 @@ RUN apt-get update && \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp using pip3 (required for the bot's core functionality)
+# Install yt-dlp
 RUN pip3 install yt-dlp
 
-# Set the working directory
 WORKDIR /app
 
-# Copy the built Go binary from the builder stage
-# IMPORTANT: Only copy the essential binary, not placeholder files.
+# Copy the built Go binary
 COPY --from=builder /bot-app /app/bot-app
 
-# Configure the environment variables
-ENV PORT 10000
+# Environment setup
+ENV PORT=10000
 EXPOSE 10000
 
-# Set the default command to run your application
+# Run the app
 CMD ["/app/bot-app"]

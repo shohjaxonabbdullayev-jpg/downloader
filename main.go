@@ -23,6 +23,7 @@ const (
 
 var (
 	downloadsDir = "downloads"
+	cookiesFile  = "cookies.txt"
 	sem          = make(chan struct{}, 3) // Limit concurrent downloads to 3
 )
 
@@ -171,10 +172,14 @@ func downloadVideo(url string) ([]string, error) {
 		"--merge-output-format", "mp4",
 		"--ffmpeg-location", ffmpegPath,
 		"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-		"--add-header", "Referer:https://www.youtube.com/",
-		"--add-header", "Accept-Language:en-US,en;q=0.9",
 		"--no-check-certificates",
 		"-o", outputTemplate,
+	}
+
+	// Use cookies.txt for Instagram or TikTok if available
+	if !isYouTube && fileExists(cookiesFile) {
+		args = append(args, "--cookies", cookiesFile)
+		log.Printf("🍪 Using cookies.txt for %s", url)
 	}
 
 	if isYouTube {
@@ -214,7 +219,12 @@ func downloadVideo(url string) ([]string, error) {
 	return files, nil
 }
 
-// ===================== COMMAND RUNNER =====================
+// ===================== HELPERS =====================
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 func runCommandCapture(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	var combined bytes.Buffer

@@ -1,47 +1,45 @@
-# ---- Builder Stage ----
-FROM golang:1.24.4-alpine AS builder
+# ========= Stage 1: Build Go binary =========
+FROM golang:1.22-alpine AS builder
 
-# Set environment variables
-ENV CGO_ENABLED=0 \
-    GOOS=linux \
-    GOARCH=amd64
-
-# Install build dependencies
-RUN apk add --no-cache git ca-certificates
-
-# Set working directory
 WORKDIR /app
 
-# Copy go.mod and go.sum first for caching
-COPY go.mod go.sum ./
+# Install required tools
+RUN apk add --no-cache git
 
-# Download dependencies
+# Copy Go modules and download dependencies
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the rest of the source code
+# Copy source code
 COPY . .
 
-# Build the Go binary
-RUN go build -o main .
+# Build the Go app statically for Linux
+RUN go build -o downloader-bot .
 
-# ---- Final Runtime Stage ----
-FROM alpine:3.19
+# ========= Stage 2: Runtime Environment =========
+FROM alpine:latest
 
-# Install runtime dependencies (yt-dlp, ffmpeg, python3, etc.)
-RUN apk add --no-cache ffmpeg python3 py3-pip py3-wheel py3-setuptools yt-dlp ca-certificates \
-    && update-ca-certificates
-
-# Set working directory
 WORKDIR /app
 
-# Copy binary from builder
-COPY --from=builder /app/main .
+# Install ffmpeg, python3, and pip for yt-dlp
+RUN apk add --no-cache ffmpeg python3 py3-pip ca-certificates && \
+    update-ca-certificates && \
+    pip install --no-cache-dir yt-dlp
 
-# Copy .env if you want (Render usually injects env vars automatically)
-# COPY .env .env
+# Copy the built Go binary and other necessary files
+COPY --from=builder /app/downloader-bot .
+COPY .env .env
+COPY cookies.txt cookies.txt
+COPY downloads ./downloads
 
-# Expose port for health check (optional)
+# Create folder if not exists
+RUN mkdir -p /app/downloads
+
+# Expose health check port
 EXPOSE 8080
 
-# Run the app
-CMD ["./main"]
+# Set environment variables
+ENV PATH="/usr/local/bin:${PATH}"
+
+# Run the bot
+CMD ["./downloader-bot"]

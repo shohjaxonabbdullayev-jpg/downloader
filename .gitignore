@@ -1,1 +1,10 @@
+# Go build
+main
+*.exe
+*.out
+
+# Environment variables
 .env*
+
+# Authentication cookies (private)
+cookies.txt

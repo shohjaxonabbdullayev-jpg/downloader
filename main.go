@@ -17,14 +17,15 @@ import (
 )
 
 const (
-	ffmpegPath = "/usr/bin" // Path for Render/Docker Linux environment
-	ytDlpPath  = "yt-dlp"   // yt-dlp is installed via pip and should be in PATH
+	ffmpegPath = "/usr/bin" // Render/Docker Linux
+	ytDlpPath  = "yt-dlp"
 )
 
 var (
-	downloadsDir = "downloads"
-	cookiesFile  = "cookies.txt"
-	sem          = make(chan struct{}, 3) // Limit concurrent downloads to 3
+	downloadsDir       = "downloads"
+	instaCookiesFile   = "cookies.txt"
+	youtubeCookiesFile = "youtube_cookies.txt"
+	sem                = make(chan struct{}, 3) // Limit concurrent downloads
 )
 
 // ===================== HEALTH CHECK =====================
@@ -176,16 +177,36 @@ func downloadVideo(url string) ([]string, error) {
 		"-o", outputTemplate,
 	}
 
-	// Use cookies.txt for Instagram or TikTok if available
-	if !isYouTube && fileExists(cookiesFile) {
-		args = append(args, "--cookies", cookiesFile)
+	// Use cookies for Instagram/TikTok or YouTube
+	if isYouTube && fileExists(youtubeCookiesFile) {
+		args = append(args, "--cookies", youtubeCookiesFile)
+		log.Printf("🍪 Using YouTube cookies for %s", url)
+	} else if !isYouTube && fileExists(instaCookiesFile) {
+		args = append(args, "--cookies", instaCookiesFile)
 		log.Printf("🍪 Using cookies.txt for %s", url)
 	}
 
+	// Format selection
 	if isYouTube {
 		args = append(args, "-f", "bv*[height<=720]+ba/best[height<=720]/best")
 	} else {
 		args = append(args, "-f", "best")
+	}
+
+	// Handle TikTok via Snaptik if TikTok link
+	if strings.Contains(url, "tiktok.com") {
+		args = []string{
+			"--no-playlist",
+			"--no-warnings",
+			"--restrict-filenames",
+			"--merge-output-format", "mp4",
+			"--ffmpeg-location", ffmpegPath,
+			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+			"--no-check-certificates",
+			"-o", outputTemplate,
+			"-f", "best",
+			fmt.Sprintf("https://snaptik.app/en2?url=%s", url),
+		}
 	}
 
 	args = append(args, url)
@@ -194,13 +215,11 @@ func downloadVideo(url string) ([]string, error) {
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 yt-dlp output:\n%s", out)
 
-	if err != nil {
-		if isYouTube {
-			log.Println("🔁 Retrying YouTube download with simpler format...")
-			args = []string{"-f", "best", "-o", outputTemplate, url}
-			out, err = runCommandCapture(ytDlpPath, args...)
-			log.Printf("🧾 Retry output:\n%s", out)
-		}
+	if err != nil && isYouTube && fileExists(youtubeCookiesFile) {
+		log.Println("🔁 Retrying YouTube download with cookies...")
+		args = []string{"-f", "best", "--cookies", youtubeCookiesFile, "-o", outputTemplate, url}
+		out, err = runCommandCapture(ytDlpPath, args...)
+		log.Printf("🧾 Retry output:\n%s", out)
 		if err != nil {
 			return nil, fmt.Errorf("yt-dlp failed: %v", err)
 		}

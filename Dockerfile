@@ -6,7 +6,8 @@ RUN apk add --no-cache git ca-certificates && update-ca-certificates
 
 WORKDIR /app
 
-# Set Go proxy directly (avoids some network issues on Render)
+# Let Go download correct toolchain automatically
+ENV GOTOOLCHAIN=go1.24.4
 ENV GOPROXY=https://proxy.golang.org,direct
 ENV GOSUMDB=sum.golang.org
 

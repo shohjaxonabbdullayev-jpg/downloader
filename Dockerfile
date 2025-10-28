@@ -1,42 +1,47 @@
-# syntax=docker/dockerfile:1
-FROM golang:1.22-alpine AS builder
+# ---- Builder Stage ----
+FROM golang:1.24.4-alpine AS builder
+
+# Set environment variables
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64
 
 # Install build dependencies
-RUN apk add --no-cache git ca-certificates ffmpeg python3 py3-pip py3-wheel py3-setuptools && update-ca-certificates
+RUN apk add --no-cache git ca-certificates
 
-# Install yt-dlp globally (for use during build)
-RUN pip install --no-cache-dir yt-dlp
-
+# Set working directory
 WORKDIR /app
 
-# Ensure correct Go toolchain
-ENV GOTOOLCHAIN=go1.24.4
-ENV GOPROXY=https://proxy.golang.org,direct
-ENV GOSUMDB=sum.golang.org
-
-# Copy and download dependencies
+# Copy go.mod and go.sum first for caching
 COPY go.mod go.sum ./
+
+# Download dependencies
 RUN go mod download
 
-# Copy source code
+# Copy the rest of the source code
 COPY . .
 
-# Build app
+# Build the Go binary
 RUN go build -o main .
 
 # ---- Final Runtime Stage ----
 FROM alpine:3.19
 
-# Install runtime deps
-RUN apk add --no-cache ffmpeg python3 py3-pip py3-wheel py3-setuptools ca-certificates && update-ca-certificates
+# Install runtime dependencies (yt-dlp, ffmpeg, python3, etc.)
+RUN apk add --no-cache ffmpeg python3 py3-pip py3-wheel py3-setuptools yt-dlp ca-certificates \
+    && update-ca-certificates
 
-# Symlink python (some scripts use it)
-RUN ln -sf python3 /usr/bin/python
-
-# Install yt-dlp again in final image
-RUN pip install --no-cache-dir yt-dlp
-
+# Set working directory
 WORKDIR /app
+
+# Copy binary from builder
 COPY --from=builder /app/main .
 
+# Copy .env if you want (Render usually injects env vars automatically)
+# COPY .env .env
+
+# Expose port for health check (optional)
+EXPOSE 8080
+
+# Run the app
 CMD ["./main"]

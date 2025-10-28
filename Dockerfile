@@ -1,24 +1,30 @@
 # syntax=docker/dockerfile:1
 FROM golang:1.22-alpine AS builder
 
-# Install git (needed for go mod download)
-RUN apk add --no-cache git
+# Install git + ca-certificates so go mod can fetch HTTPS modules
+RUN apk add --no-cache git ca-certificates && update-ca-certificates
 
 WORKDIR /app
 
-# Copy dependency files first for caching
+# Set Go proxy directly (avoids some network issues on Render)
+ENV GOPROXY=https://proxy.golang.org,direct
+ENV GOSUMDB=sum.golang.org
+
+# Copy dependency files
 COPY go.mod go.sum ./
+
+# Download dependencies
 RUN go mod download
 
-# Copy the rest of the app
+# Copy source code
 COPY . .
 
-# Build the Go binary
+# Build app
 RUN go build -o main .
 
-# Minimal runtime image
+# Final minimal image
 FROM alpine:latest
-
+RUN apk add --no-cache ca-certificates && update-ca-certificates
 WORKDIR /app
 COPY --from=builder /app/main .
 

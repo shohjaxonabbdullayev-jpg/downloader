@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ffmpegPath = "/usr/bin" // Render/Docker Linux
+	ffmpegPath = "/usr/bin" // Render/Docker Linux environment
 	ytDlpPath  = "yt-dlp"
 )
 
@@ -28,7 +28,7 @@ var (
 	sem                = make(chan struct{}, 3) // Limit concurrent downloads
 )
 
-// ===================== HEALTH CHECK =====================
+// ===================== HEALTH CHECK SERVER =====================
 func startHealthCheckServer(port string) {
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -38,6 +38,36 @@ func startHealthCheckServer(port string) {
 	log.Printf("💚 Starting health check server on port %s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("❌ Health check server failed: %v", err)
+	}
+}
+
+// ===================== PERIODIC PING SERVICE =====================
+func startPingService() {
+	targets := []string{
+		"https://api.telegram.org",
+		"https://www.youtube.com",
+		"https://www.instagram.com",
+		"https://www.tiktok.com",
+	}
+
+	for {
+		log.Println("🔄 Running periodic ping check...")
+
+		for _, url := range targets {
+			start := time.Now()
+			resp, err := http.Get(url)
+			duration := time.Since(start)
+
+			if err != nil {
+				log.Printf("❌ Ping failed for %s: %v", url, err)
+				continue
+			}
+
+			_ = resp.Body.Close()
+			log.Printf("✅ %s responded in %v (status %d)", url, duration, resp.StatusCode)
+		}
+
+		time.Sleep(2 * time.Minute)
 	}
 }
 
@@ -58,6 +88,7 @@ func main() {
 	}
 
 	go startHealthCheckServer(port)
+	go startPingService() // Run background ping service every 2 minutes
 
 	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
 		log.Fatalf("❌ Failed to create downloads folder: %v", err)

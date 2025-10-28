@@ -1,13 +1,30 @@
+# render.yaml
+# This file defines the infrastructure for the Telegram Bot on Render.
+
+# Use a Docker image environment for full control over dependencies (yt-dlp, ffmpeg)
 services:
   - type: web
-    name: downloader-bot
-    env: go
-    plan: free
-    autoDeploy: true
-    buildCommand: go build -o main .
-    startCommand: ./main
+    name: telegram-downloader-bot
+    env: docker
+    
+    # Use the official Google Go base image
+    dockerContext: .
+    dockerfilePath: Dockerfile
+
+    # Build and start command are handled by the Dockerfile
+    
+    # Environment Variables (IMPORTANT: Replace 'YOUR_BOT_TOKEN' below 
+    # with a placeholder and set the real value in the Render dashboard)
     envVars:
       - key: BOT_TOKEN
-        sync: false
+        value: YOUR_BOT_TOKEN_PLACEHOLDER 
       - key: PORT
         value: 10000
+        
+    # Health check is crucial for Render to know the service is alive
+    healthCheck:
+      path: /health
+      port: 10000
+      interval: 10s
+      timeout: 5s
+      restartLimit: 3

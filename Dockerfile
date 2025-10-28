@@ -1,30 +1,46 @@
-# Use lightweight Go image
-FROM golang:1.24-bullseye
+# Use a multi-stage build for a smaller final image
+# --- STAGE 1: Build the Go application ---
+FROM golang:1.22 AS builder
 
-# Install dependencies: python3, pip, ffmpeg, curl
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        python3 python3-venv python3-pip ffmpeg curl ca-certificates && \
-    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
-    chmod a+rx /usr/local/bin/yt-dlp && \
-    python3 -m pip install --upgrade pip setuptools wheel && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Set working directory
 WORKDIR /app
 
-# Copy Go modules first (for caching)
+# Copy the Go module files and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the app and cookies.txt
+# Copy the source code
 COPY . .
 
-# Ensure downloads directory exists
-RUN mkdir -p downloads
+# Build the Go binary
+RUN CGO_ENABLED=0 GOOS=linux go build -o /bot-app .
 
-# Build the Go app
-RUN go build -o main .
+# --- STAGE 2: Create the final production image ---
+# Use a slim Linux distribution to keep the final image small
+FROM debian:bookworm-slim
 
+# Install system dependencies: ffmpeg and python3 (for yt-dlp)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ffmpeg \
+    python3 \
+    python3-pip && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install yt-dlp using pip
+RUN pip3 install yt-dlp
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the built Go binary from the builder stage
+COPY --from=builder /bot-app /app/bot-app
+
+# The constant ffmpegPath = "/usr/bin" in main.go points to where ffmpeg is installed
+
+# Expose the port (Render's internal network needs this)
+ENV PORT 10000
 EXPOSE 10000
-CMD ["./main"]
+
+# Set the default command to run your application
+CMD ["/app/bot-app"]

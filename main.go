@@ -132,12 +132,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			} else {
 				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi: fayl topilmadi."))
 			}
-
-			for _, f := range files {
-				if err := os.Remove(f); err != nil {
-					log.Printf("⚠️ Failed to delete temp file %s: %v", f, err)
-				}
-			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
 	}
 }
@@ -235,9 +229,16 @@ func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessa
 	msg := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 	msg.Caption = "🎥 Video"
 	msg.ReplyToMessageID = replyToMessageID
+
 	if _, err := bot.Send(msg); err != nil {
 		log.Printf("❌ Failed to send video %s: %v", filePath, err)
 		sendDocument(bot, chatID, filePath, replyToMessageID)
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("⚠️ Failed to delete file after sending video %s: %v", filePath, err)
+		} else {
+			log.Printf("🧹 Deleted file after sending video: %s", filePath)
+		}
 	}
 }
 
@@ -245,8 +246,15 @@ func sendDocument(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMe
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 	doc.Caption = "⚠️ Fayl hajmi katta bo‘lgani uchun hujjat sifatida yuborildi."
 	doc.ReplyToMessageID = replyToMessageID
+
 	if _, err := bot.Send(doc); err != nil {
 		log.Printf("❌ Failed to send document %s: %v", filePath, err)
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Faylni Telegramga yuklab bo‘lmadi."))
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("⚠️ Failed to delete file after sending document %s: %v", filePath, err)
+		} else {
+			log.Printf("🧹 Deleted file after sending document: %s", filePath)
+		}
 	}
 }

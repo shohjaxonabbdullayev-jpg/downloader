@@ -24,7 +24,7 @@ const (
 var (
 	downloadsDir       = "downloads"
 	instaCookiesFile   = "cookies.txt"
-	youtubeCookiesFile = "youtube_cookies.txt"
+	youtubeCookiesFile = "youtube.com_cookies.txt"
 	sem                = make(chan struct{}, 3)
 )
 

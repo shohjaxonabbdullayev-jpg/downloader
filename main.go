@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,207 +17,273 @@ import (
 )
 
 const (
-	ffmpegPath = "/usr/bin"
-	ytDlpPath  = "/usr/local/bin/yt-dlp"
+	ffmpegPath = "/usr/bin" // Render/Docker Linux environment
+	ytDlpPath  = "yt-dlp"
 )
 
 var (
+	downloadsDir       = "downloads"
 	instaCookiesFile   = "cookies.txt"
 	youtubeCookiesFile = "youtube_cookies.txt"
+	sem                = make(chan struct{}, 3) // Limit concurrent downloads
 )
 
+// ===================== HEALTH CHECK SERVER =====================
+func startHealthCheckServer(port string) {
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "✅ Bot is running and healthy!")
+	})
+
+	log.Printf("💚 Starting health check server on port %s", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Fatalf("❌ Health check server failed: %v", err)
+	}
+}
+
+// ===================== MAIN =====================
 func main() {
-	// Load environment
 	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️ No .env file found, continuing...")
+		log.Println("⚠️ .env file not found, using system environment (Render uses env vars)")
 	}
 
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
-		log.Fatal("❌ BOT_TOKEN not found in .env")
+		log.Fatal("❌ BOT_TOKEN not set in environment or .env file")
 	}
 
-	// Initialize bot
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	go startHealthCheckServer(port)
+
+	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
+		log.Fatalf("❌ Failed to create downloads folder: %v", err)
+	}
+
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("❌ Bot initialization failed: %v", err)
 	}
-	bot.Debug = false
+
 	log.Printf("🤖 Bot authorized as @%s", bot.Self.UserName)
 
-	// Updates
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
-	// Ensure downloads folder exists
-	os.MkdirAll("downloads", 0755)
-
 	for update := range updates {
-		if update.Message != nil {
-			go handleMessage(bot, update.Message)
-		} else if update.CallbackQuery != nil {
-			go handleCallback(bot, update.CallbackQuery)
+		if update.Message == nil {
+			continue
 		}
+		go handleMessage(bot, update.Message)
 	}
 }
 
-// ================= MESSAGE HANDLER =================
+// ===================== MESSAGE HANDLER =====================
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	if msg.Text == "" {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
 		return
 	}
 
-	url := strings.TrimSpace(msg.Text)
-	if !isSupportedURL(url) {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Please send a valid YouTube, Instagram, or TikTok link.")
-		bot.Send(reply)
+	chatID := msg.Chat.ID
+
+	if text == "/start" {
+		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram yoki TikTok link yuboring — men sizga videoni yuboraman."
+		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
 	}
 
-	sent, _ := bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "⬇️ Downloading your video... Please wait."))
-
-	filePath, err := downloadVideo(url)
-	if err != nil {
-		edit := tgbotapi.NewEditMessageText(msg.Chat.ID, sent.MessageID, fmt.Sprintf("❌ Download failed: %v", err))
-		bot.Send(edit)
-		return
-	}
-	defer os.Remove(filePath)
-
-	video := tgbotapi.NewVideo(msg.Chat.ID, tgbotapi.FilePath(filePath))
-	video.Caption = "✅ Download complete!"
-	_, err = bot.Send(video)
-	if err != nil {
-		edit := tgbotapi.NewEditMessageText(msg.Chat.ID, sent.MessageID, fmt.Sprintf("❌ Error sending video: %v", err))
-		bot.Send(edit)
+	links := extractSupportedLinks(text)
+	if len(links) == 0 {
 		return
 	}
 
-	// Buttons
-	var kb tgbotapi.InlineKeyboardMarkup
-	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") {
-		kb = tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("📜 Top 10 Most Liked Comments", "comments|"+url),
-				tgbotapi.NewInlineKeyboardButtonURL("➕ Add Bot to Group", "https://t.me/"+bot.Self.UserName+"?startgroup=true"),
-			),
-		)
-	} else {
-		kb = tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonURL("➕ Add Bot to Group", "https://t.me/"+bot.Self.UserName+"?startgroup=true"),
-			),
-		)
-	}
-
-	editMarkup := tgbotapi.NewEditMessageReplyMarkup(msg.Chat.ID, sent.MessageID, kb)
-	bot.Send(editMarkup)
-}
-
-// ================= CALLBACK HANDLER =================
-func handleCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) {
-	data := cb.Data
-	if strings.HasPrefix(data, "comments|") {
-		url := strings.TrimPrefix(data, "comments|")
-
-		msg := tgbotapi.NewMessage(cb.Message.Chat.ID, "💬 Fetching top 10 most liked comments...")
-		sent, _ := bot.Send(msg)
-
-		comments, err := fetchTopComments(url)
-		if err != nil {
-			edit := tgbotapi.NewEditMessageText(cb.Message.Chat.ID, sent.MessageID,
-				fmt.Sprintf("❌ Failed to fetch comments: %v", err))
-			bot.Send(edit)
-			return
+	for _, link := range links {
+		if strings.Contains(link, "youtube.com/shorts/") {
+			link = strings.Replace(link, "shorts/", "watch?v=", 1)
 		}
 
-		result := "📝 *Top 10 Most Liked Comments:*\n\n" + comments
-		edit := tgbotapi.NewEditMessageText(cb.Message.Chat.ID, sent.MessageID, result)
-		edit.ParseMode = "Markdown"
-		bot.Send(edit)
+		loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda... iltimos kuting.")
+		loadingMsg.ReplyToMessageID = msg.MessageID
+		sent, _ := bot.Send(loadingMsg)
+
+		go func(url string, chatID int64, replyToID, loadingMsgID int) {
+			sem <- struct{}{}
+			files, err := downloadVideo(url)
+			<-sem
+
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+				ChatID:    chatID,
+				MessageID: loadingMsgID,
+			})
+
+			if err != nil {
+				log.Printf("❌ Download error for %s: %v", url, err)
+				errorMsg := tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Iltimos, linkning to‘g‘ri ekanligiga ishonch hosil qiling.")
+				errorMsg.ReplyToMessageID = replyToID
+				bot.Send(errorMsg)
+				return
+			}
+
+			if len(files) > 0 {
+				sendVideo(bot, chatID, files[0], replyToID)
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi: fayl topilmadi."))
+			}
+		}(link, chatID, msg.MessageID, sent.MessageID)
 	}
 }
 
-// ================= UTILITIES =================
-func isSupportedURL(url string) bool {
-	matched, _ := regexp.MatchString(`(youtube\.com|youtu\.be|instagram\.com|tiktok\.com)`, url)
-	return matched
+// ===================== LINK EXTRACTION =====================
+func extractSupportedLinks(text string) []string {
+	regex := `(https?://[^\s]+)`
+	matches := regexp.MustCompile(regex).FindAllString(text, -1)
+	var links []string
+	for _, m := range matches {
+		if isSupportedLink(m) {
+			links = append(links, m)
+		}
+	}
+	return links
 }
 
+func isSupportedLink(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "youtube.com") ||
+		strings.Contains(text, "youtu.be") ||
+		strings.Contains(text, "instagram.com") ||
+		strings.Contains(text, "instagr.am") ||
+		strings.Contains(text, "tiktok.com")
+}
+
+// ===================== DOWNLOAD FUNCTION =====================
+func downloadVideo(url string) ([]string, error) {
+	uniqueID := time.Now().UnixNano()
+	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
+	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
+
+	args := []string{
+		"--no-playlist",
+		"--no-warnings",
+		"--restrict-filenames",
+		"--merge-output-format", "mp4",
+		"--ffmpeg-location", ffmpegPath,
+		"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+		"--no-check-certificates",
+		"-o", outputTemplate,
+	}
+
+	// Use cookies for Instagram/TikTok or YouTube
+	if isYouTube && fileExists(youtubeCookiesFile) {
+		args = append(args, "--cookies", youtubeCookiesFile)
+		log.Printf("🍪 Using YouTube cookies for %s", url)
+	} else if !isYouTube && fileExists(instaCookiesFile) {
+		args = append(args, "--cookies", instaCookiesFile)
+		log.Printf("🍪 Using cookies.txt for %s", url)
+	}
+
+	// Format selection
+	if isYouTube {
+		args = append(args, "-f", "bv*[height<=720]+ba/best[height<=720]/best")
+	} else {
+		args = append(args, "-f", "best")
+	}
+
+	// Handle TikTok via Snaptik if TikTok link
+	if strings.Contains(url, "tiktok.com") {
+		args = []string{
+			"--no-playlist",
+			"--no-warnings",
+			"--restrict-filenames",
+			"--merge-output-format", "mp4",
+			"--ffmpeg-location", ffmpegPath,
+			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+			"--no-check-certificates",
+			"-o", outputTemplate,
+			"-f", "best",
+			fmt.Sprintf("https://snaptik.app/en2?url=%s", url),
+		}
+	}
+
+	args = append(args, url)
+
+	log.Printf("⚙️ Downloading with yt-dlp: %s", url)
+	out, err := runCommandCapture(ytDlpPath, args...)
+	log.Printf("🧾 yt-dlp output:\n%s", out)
+
+	if err != nil && isYouTube && fileExists(youtubeCookiesFile) {
+		log.Println("🔁 Retrying YouTube download with cookies...")
+		args = []string{"-f", "best", "--cookies", youtubeCookiesFile, "-o", outputTemplate, url}
+		out, err = runCommandCapture(ytDlpPath, args...)
+		log.Printf("🧾 Retry output:\n%s", out)
+		if err != nil {
+			return nil, fmt.Errorf("yt-dlp failed: %v", err)
+		}
+	}
+
+	files, _ := filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
+	if len(files) == 0 {
+		time.Sleep(1 * time.Second)
+		files, _ = filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
+		if len(files) == 0 {
+			return nil, fmt.Errorf("no file found after download")
+		}
+	}
+
+	log.Printf("✅ Download complete: %s", files[0])
+	return files, nil
+}
+
+// ===================== HELPERS =====================
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
 }
 
-// ================= DOWNLOAD FUNCTION =================
-func downloadVideo(url string) (string, error) {
-	timestamp := time.Now().Unix()
-	outPath := filepath.Join("downloads", fmt.Sprintf("video_%d.%%(ext)s", timestamp))
-
-	args := []string{"-f", "mp4", "-o", outPath, "--no-warnings", "--no-check-certificates"}
-
-	// Apply cookies
-	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") {
-		if fileExists(youtubeCookiesFile) {
-			args = append(args, "--cookies", youtubeCookiesFile)
-			log.Println("🍪 Using YouTube cookies.")
-		}
-	} else if strings.Contains(url, "instagram.com") || strings.Contains(url, "tiktok.com") {
-		if fileExists(instaCookiesFile) {
-			args = append(args, "--cookies", instaCookiesFile)
-			log.Println("🍪 Using Instagram/TikTok cookies.")
-		}
-	}
-
-	args = append(args, url)
-	cmd := exec.Command(ytDlpPath, args...)
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
+func runCommandCapture(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
 	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("yt-dlp error: %s", stderr.String())
-	}
-
-	files, _ := filepath.Glob(filepath.Join("downloads", fmt.Sprintf("video_%d.*", timestamp)))
-	if len(files) == 0 {
-		return "", fmt.Errorf("downloaded file not found")
-	}
-
-	return files[0], nil
+	return combined.String(), err
 }
 
-// ================= COMMENTS FETCHER =================
-func fetchTopComments(url string) (string, error) {
-	args := []string{
-		"--get-comments", "--skip-download", "--no-warnings",
+// ===================== SENDERS =====================
+func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
+	msg := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+	msg.Caption = "🎥 Video"
+	msg.ReplyToMessageID = replyToMessageID
+
+	if _, err := bot.Send(msg); err != nil {
+		log.Printf("❌ Failed to send video %s: %v", filePath, err)
+		sendDocument(bot, chatID, filePath, replyToMessageID)
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("⚠️ Failed to delete file after sending video %s: %v", filePath, err)
+		} else {
+			log.Printf("🧹 Deleted file after sending video: %s", filePath)
+		}
 	}
-	if fileExists(youtubeCookiesFile) {
-		args = append(args, "--cookies", youtubeCookiesFile)
+}
+
+func sendDocument(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
+	doc.Caption = "⚠️ Fayl hajmi katta bo‘lgani uchun hujjat sifatida yuborildi."
+	doc.ReplyToMessageID = replyToMessageID
+
+	if _, err := bot.Send(doc); err != nil {
+		log.Printf("❌ Failed to send document %s: %v", filePath, err)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Faylni Telegramga yuklab bo‘lmadi."))
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("⚠️ Failed to delete file after sending document %s: %v", filePath, err)
+		} else {
+			log.Printf("🧹 Deleted file after sending document: %s", filePath)
+		}
 	}
-	args = append(args, url)
-
-	cmd := exec.Command(ytDlpPath, args...)
-
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = nil
-
-	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("yt-dlp error: %v", err)
-	}
-
-	lines := strings.Split(out.String(), "\n")
-	if len(lines) == 0 {
-		return "", fmt.Errorf("no comments found")
-	}
-
-	if len(lines) > 10 {
-		lines = lines[:10]
-	}
-
-	return strings.Join(lines, "\n"), nil
 }

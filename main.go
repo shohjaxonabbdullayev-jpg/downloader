@@ -130,7 +130,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			}
 
 			if len(files) > 0 {
-				sendVideo(bot, chatID, files[0], replyToID)
+				sendVideoWithButton(bot, chatID, files[0], replyToID)
 			} else {
 				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi: fayl topilmadi."))
 			}
@@ -165,6 +165,7 @@ func downloadVideo(url string) ([]string, error) {
 	uniqueID := time.Now().UnixNano()
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
 	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
+	isInstagram := strings.Contains(url, "instagram.com")
 
 	args := []string{
 		"--no-playlist",
@@ -177,13 +178,19 @@ func downloadVideo(url string) ([]string, error) {
 		"-o", outputTemplate,
 	}
 
-	// Use cookies for Instagram/TikTok or YouTube
+	// Use cookies for sites that need authentication
 	if isYouTube && fileExists(youtubeCookiesFile) {
 		args = append(args, "--cookies", youtubeCookiesFile)
 		log.Printf("🍪 Using YouTube cookies for %s", url)
-	} else if !isYouTube && fileExists(instaCookiesFile) {
+	} else if isInstagram && fileExists(instaCookiesFile) {
 		args = append(args, "--cookies", instaCookiesFile)
-		log.Printf("🍪 Using cookies.txt for %s", url)
+		log.Printf("🍪 Using Instagram cookies for %s", url)
+	}
+
+	// Handle Instagram Stories
+	if isInstagram && (strings.Contains(url, "/stories/") || strings.Contains(url, "/s/")) {
+		args = append(args, "--download-archive", "insta_stories_archive.txt", "--compat-options", "no-youtube-unavailable-videos")
+		log.Printf("📸 Detected Instagram Story URL: %s", url)
 	}
 
 	// Format selection
@@ -193,36 +200,14 @@ func downloadVideo(url string) ([]string, error) {
 		args = append(args, "-f", "best")
 	}
 
-	// Handle TikTok via Snaptik if TikTok link
-	if strings.Contains(url, "tiktok.com") {
-		args = []string{
-			"--no-playlist",
-			"--no-warnings",
-			"--restrict-filenames",
-			"--merge-output-format", "mp4",
-			"--ffmpeg-location", ffmpegPath,
-			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-			"--no-check-certificates",
-			"-o", outputTemplate,
-			"-f", "best",
-			fmt.Sprintf("https://snaptik.app/en2?url=%s", url),
-		}
-	}
-
 	args = append(args, url)
 
 	log.Printf("⚙️ Downloading with yt-dlp: %s", url)
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 yt-dlp output:\n%s", out)
 
-	if err != nil && isYouTube && fileExists(youtubeCookiesFile) {
-		log.Println("🔁 Retrying YouTube download with cookies...")
-		args = []string{"-f", "best", "--cookies", youtubeCookiesFile, "-o", outputTemplate, url}
-		out, err = runCommandCapture(ytDlpPath, args...)
-		log.Printf("🧾 Retry output:\n%s", out)
-		if err != nil {
-			return nil, fmt.Errorf("yt-dlp failed: %v", err)
-		}
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp failed: %v", err)
 	}
 
 	files, _ := filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
@@ -254,12 +239,17 @@ func runCommandCapture(name string, args ...string) (string, error) {
 }
 
 // ===================== SENDERS =====================
-func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
-	msg := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
-	msg.Caption = "🎥 Video"
-	msg.ReplyToMessageID = replyToMessageID
+func sendVideoWithButton(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
+	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+	video.Caption = "🎥 Video tayyor!"
+	video.ReplyToMessageID = replyToMessageID
 
-	if _, err := bot.Send(msg); err != nil {
+	// Add "Guruhga qo‘shish" button
+	button := tgbotapi.NewInlineKeyboardButtonURL("➕ Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(button))
+	video.ReplyMarkup = keyboard
+
+	if _, err := bot.Send(video); err != nil {
 		log.Printf("❌ Failed to send video %s: %v", filePath, err)
 		sendDocument(bot, chatID, filePath, replyToMessageID)
 	} else {

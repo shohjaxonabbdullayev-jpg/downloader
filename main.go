@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -15,30 +17,59 @@ import (
 )
 
 const (
-	metubeURL = "http://metube:8081/api" // internal Docker network URL
+	ffmpegPath = "/usr/bin" // Render/Docker Linux environment
+	ytDlpPath  = "yt-dlp"
 )
 
-type MeTubeJob struct {
-	URL string `json:"url"`
+var (
+	downloadsDir       = "downloads"
+	instaCookiesFile   = "cookies.txt"
+	youtubeCookiesFile = "youtube_cookies.txt"
+	sem                = make(chan struct{}, 3) // Limit concurrent downloads
+)
+
+// ===================== HEALTH CHECK SERVER =====================
+func startHealthCheckServer(port string) {
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "✅ Bot is running and healthy!")
+	})
+
+	log.Printf("💚 Starting health check server on port %s", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Fatalf("❌ Health check server failed: %v", err)
+	}
 }
 
-type MeTubeResponse struct {
-	ID string `json:"id"`
-}
-
+// ===================== MAIN =====================
 func main() {
-	err := godotenv.Load(".env")
-	if err != nil {
-		log.Println("⚠️  No .env file found")
+	if err := godotenv.Load(); err != nil {
+		log.Println("⚠️ .env file not found, using system environment (Render uses env vars)")
 	}
 
-	botToken := os.Getenv("BOT_TOKEN")
-	bot, err := tgbotapi.NewBotAPI(botToken)
-	if err != nil {
-		log.Panic(err)
+	token := os.Getenv("BOT_TOKEN")
+	if token == "" {
+		log.Fatal("❌ BOT_TOKEN not set in environment or .env file")
 	}
 
-	log.Printf("🤖 Bot authorized as %s", bot.Self.UserName)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	go startHealthCheckServer(port)
+
+	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
+		log.Fatalf("❌ Failed to create downloads folder: %v", err)
+	}
+
+	bot, err := tgbotapi.NewBotAPI(token)
+	if err != nil {
+		log.Fatalf("❌ Bot initialization failed: %v", err)
+	}
+
+	log.Printf("🤖 Bot authorized as @%s", bot.Self.UserName)
+
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
@@ -47,56 +78,215 @@ func main() {
 		if update.Message == nil {
 			continue
 		}
-		link := update.Message.Text
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "📥 Downloading your video, please wait...")
-		bot.Send(msg)
-
-		videoPath, err := downloadWithMeTube(link)
-		if err != nil {
-			errMsg := fmt.Sprintf("❌ Error: %v", err)
-			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, errMsg))
-			continue
-		}
-
-		videoFile := tgbotapi.NewVideo(update.Message.Chat.ID, tgbotapi.FilePath(videoPath))
-		videoFile.Caption = "✅ Download complete!"
-		if _, err := bot.Send(videoFile); err != nil {
-			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "❌ Failed to send video"))
-			continue
-		}
-
-		os.Remove(videoPath)
+		go handleMessage(bot, update.Message)
 	}
 }
 
-func downloadWithMeTube(url string) (string, error) {
-	payload := MeTubeJob{URL: url}
-	body, _ := json.Marshal(payload)
-
-	resp, err := http.Post(metubeURL+"/download", "application/json", bytes.NewBuffer(body))
-	if err != nil {
-		return "", fmt.Errorf("failed to contact MeTube: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		data, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("MeTube error: %s", data)
+// ===================== MESSAGE HANDLER =====================
+func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		return
 	}
 
-	var job MeTubeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
-		return "", err
+	chatID := msg.Chat.ID
+
+	switch text {
+	case "/start":
+		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram yoki TikTok link yuboring — men sizga videoni yuboraman.\n\n📢 Botdan guruhda ham foydalanish uchun quyidagi tugmadan foydalaning 👇"
+
+		addToGroupBtn := tgbotapi.NewInlineKeyboardButtonURL(
+			"➕ Guruhga qo‘shish",
+			fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
+		)
+
+		helpBtn := tgbotapi.NewInlineKeyboardButtonData("ℹ️ Yordam", "help")
+
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(addToGroupBtn),
+			tgbotapi.NewInlineKeyboardRow(helpBtn),
+		)
+
+		msgToSend := tgbotapi.NewMessage(chatID, startMsg)
+		msgToSend.ReplyMarkup = keyboard
+		bot.Send(msgToSend)
+		return
+
+	case "/help":
+		helpMsg := "❓ Agar bot bilan bog‘liq muammo bo‘lsa, admin bilan bog‘laning:\n👉 @nonfindable"
+		bot.Send(tgbotapi.NewMessage(chatID, helpMsg))
+		return
 	}
 
-	// Wait for MeTube to finish
-	videoPath := fmt.Sprintf("./downloads/%s.mp4", job.ID)
-	for i := 0; i < 60; i++ {
-		if _, err := os.Stat(videoPath); err == nil {
-			return videoPath, nil
+	links := extractSupportedLinks(text)
+	if len(links) == 0 {
+		return
+	}
+
+	for _, link := range links {
+		if strings.Contains(link, "youtube.com/shorts/") {
+			link = strings.Replace(link, "shorts/", "watch?v=", 1)
 		}
-		time.Sleep(2 * time.Second)
+
+		loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda... iltimos kuting.")
+		loadingMsg.ReplyToMessageID = msg.MessageID
+		sent, _ := bot.Send(loadingMsg)
+
+		go func(url string, chatID int64, replyToID, loadingMsgID int) {
+			sem <- struct{}{}
+			files, err := downloadVideo(url)
+			<-sem
+
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+				ChatID:    chatID,
+				MessageID: loadingMsgID,
+			})
+
+			if err != nil {
+				log.Printf("❌ Download error for %s: %v", url, err)
+				errorMsg := tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Iltimos, linkning to‘g‘ri ekanligiga ishonch hosil qiling.")
+				errorMsg.ReplyToMessageID = replyToID
+				bot.Send(errorMsg)
+				return
+			}
+
+			if len(files) > 0 {
+				sendVideo(bot, chatID, files[0], replyToID)
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi: fayl topilmadi."))
+			}
+		}(link, chatID, msg.MessageID, sent.MessageID)
+	}
+}
+
+// ===================== LINK EXTRACTION =====================
+func extractSupportedLinks(text string) []string {
+	regex := `(https?://[^\s]+)`
+	matches := regexp.MustCompile(regex).FindAllString(text, -1)
+	var links []string
+	for _, m := range matches {
+		if isSupportedLink(m) {
+			links = append(links, m)
+		}
+	}
+	return links
+}
+
+func isSupportedLink(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "youtube.com") ||
+		strings.Contains(text, "youtu.be") ||
+		strings.Contains(text, "instagram.com") ||
+		strings.Contains(text, "instagr.am") ||
+		strings.Contains(text, "tiktok.com")
+}
+
+// ===================== DOWNLOAD FUNCTION =====================
+func downloadVideo(url string) ([]string, error) {
+	uniqueID := time.Now().UnixNano()
+	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
+	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
+
+	args := []string{
+		"--no-playlist",
+		"--no-warnings",
+		"--restrict-filenames",
+		"--merge-output-format", "mp4",
+		"--ffmpeg-location", ffmpegPath,
+		"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+		"--no-check-certificates",
+		"-o", outputTemplate,
 	}
 
-	return "", fmt.Errorf("timeout waiting for MeTube download")
+	if isYouTube && fileExists(youtubeCookiesFile) {
+		args = append(args, "--cookies", youtubeCookiesFile)
+		log.Printf("🍪 Using YouTube cookies for %s", url)
+	} else if !isYouTube && fileExists(instaCookiesFile) {
+		args = append(args, "--cookies", instaCookiesFile)
+		log.Printf("🍪 Using cookies.txt for %s", url)
+	}
+
+	if isYouTube {
+		args = append(args, "-f", "bv*[height<=720]+ba/best[height<=720]/best")
+	} else {
+		args = append(args, "-f", "best")
+	}
+
+	args = append(args, url)
+
+	log.Printf("⚙️ Downloading with yt-dlp: %s", url)
+	out, err := runCommandCapture(ytDlpPath, args...)
+	log.Printf("🧾 yt-dlp output:\n%s", out)
+
+	if err != nil && isYouTube && fileExists(youtubeCookiesFile) {
+		log.Println("🔁 Retrying YouTube download with cookies...")
+		args = []string{"-f", "best", "--cookies", youtubeCookiesFile, "-o", outputTemplate, url}
+		out, err = runCommandCapture(ytDlpPath, args...)
+		log.Printf("🧾 Retry output:\n%s", out)
+		if err != nil {
+			return nil, fmt.Errorf("yt-dlp failed: %v", err)
+		}
+	}
+
+	files, _ := filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
+	if len(files) == 0 {
+		time.Sleep(1 * time.Second)
+		files, _ = filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
+		if len(files) == 0 {
+			return nil, fmt.Errorf("no file found after download")
+		}
+	}
+
+	log.Printf("✅ Download complete: %s", files[0])
+	return files, nil
+}
+
+// ===================== HELPERS =====================
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func runCommandCapture(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	err := cmd.Run()
+	return combined.String(), err
+}
+
+// ===================== SENDERS =====================
+func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
+	msg := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+	msg.Caption = "🎥 Video"
+	msg.ReplyToMessageID = replyToMessageID
+
+	if _, err := bot.Send(msg); err != nil {
+		log.Printf("❌ Failed to send video %s: %v", filePath, err)
+		sendDocument(bot, chatID, filePath, replyToMessageID)
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("⚠️ Failed to delete file after sending video %s: %v", filePath, err)
+		} else {
+			log.Printf("🧹 Deleted file after sending video: %s", filePath)
+		}
+	}
+}
+
+func sendDocument(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
+	doc.Caption = "⚠️ Fayl hajmi katta bo‘lgani uchun hujjat sifatida yuborildi."
+	doc.ReplyToMessageID = replyToMessageID
+
+	if _, err := bot.Send(doc); err != nil {
+		log.Printf("❌ Failed to send document %s: %v", filePath, err)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Faylni Telegramga yuklab bo‘lmadi."))
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("⚠️ Failed to delete file after sending document %s: %v", filePath, err)
+		} else {
+			log.Printf("🧹 Deleted file after sending document: %s", filePath)
+		}
+	}
 }

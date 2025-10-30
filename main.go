@@ -17,16 +17,15 @@ import (
 )
 
 const (
-	ffmpegPath    = "/usr/bin"
-	ytDlpPath     = "yt-dlp"
-	galleryDlPath = "gallery-dl"
+	ffmpegPath     = "/usr/bin"
+	ytDlpPath      = "yt-dlp"
+	instaloaderCmd = "instaloader"
 )
 
 var (
 	downloadsDir       = "downloads"
-	instaCookiesFile   = "cookies.txt"
 	youtubeCookiesFile = "youtube_cookies.txt"
-	sem                = make(chan struct{}, 3) // concurrency limit
+	sem                = make(chan struct{}, 3)
 )
 
 // ===================== HEALTH CHECK =====================
@@ -52,11 +51,16 @@ func main() {
 		log.Fatal("❌ BOT_TOKEN not set in environment.")
 	}
 
+	instaUser := os.Getenv("INSTA_USER")
+	instaPass := os.Getenv("INSTA_PASS")
+	if instaUser == "" || instaPass == "" {
+		log.Println("⚠️ Instagram login not set (INSTA_USER / INSTA_PASS). Instaloader may fail.")
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-
 	go startHealthCheckServer(port)
 
 	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
@@ -113,11 +117,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, err := downloadMedia(url)
 			<-sem
 
-			// Delete loading message
-			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
-				ChatID:    chatID,
-				MessageID: loadMsgID,
-			})
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: loadMsgID})
 
 			if err != nil {
 				log.Printf("❌ Error: %v", err)
@@ -163,45 +163,54 @@ func downloadMedia(url string) ([]string, error) {
 	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
 	isTikTok := strings.Contains(url, "tiktok.com")
 
-	// --- Instagram logic ---
 	if isInstagram {
 		if strings.Contains(url, "/p/") {
-			// 📸 Instagram IMAGE (use gallery-dl)
-			return downloadWithGalleryDL(url, uniqueID)
+			return downloadWithInstaloader(url, uniqueID)
 		} else if strings.Contains(url, "/reel/") || strings.Contains(url, "/stories/") {
-			// 🎥 Instagram REEL or STORY (use yt-dlp)
 			return downloadWithYtDlp(url, uniqueID, false)
 		}
 	}
 
-	// --- YouTube or TikTok ---
 	if isYouTube || isTikTok {
 		return downloadWithYtDlp(url, uniqueID, isYouTube)
 	}
 
-	// --- Unsupported URL type ---
-	return nil, fmt.Errorf("unsupported URL type: %s", url)
+	return nil, fmt.Errorf("unsupported URL: %s", url)
 }
 
-func downloadWithGalleryDL(url string, uniqueID int64) ([]string, error) {
+// ===================== INSTALOADER (for photos) =====================
+func downloadWithInstaloader(url string, uniqueID int64) ([]string, error) {
 	outputDir := filepath.Join(downloadsDir, fmt.Sprintf("%d_instagram", uniqueID))
-	args := []string{"-d", outputDir, url}
+	os.MkdirAll(outputDir, 0755)
 
-	log.Printf("🖼️ Downloading Instagram image via gallery-dl: %s", url)
-	out, err := runCommandCapture(galleryDlPath, args...)
-	log.Printf("📄 gallery-dl output:\n%s", out)
+	instaUser := os.Getenv("INSTA_USER")
+	instaPass := os.Getenv("INSTA_PASS")
+
+	args := []string{
+		"--no-metadata-json",
+		"--dirname-pattern", outputDir,
+		"--filename-pattern", "{shortcode}",
+		"--login", instaUser,
+		"--password", instaPass,
+		url,
+	}
+
+	log.Printf("📸 Downloading Instagram photo via Instaloader: %s", url)
+	out, err := runCommandCapture(instaloaderCmd, args...)
+	log.Printf("📄 Instaloader output:\n%s", out)
 
 	if err != nil {
-		return nil, fmt.Errorf("gallery-dl failed: %v", err)
+		return nil, fmt.Errorf("instaloader failed: %v", err)
 	}
 
 	files, _ := filepath.Glob(filepath.Join(outputDir, "*"))
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no files found after gallery-dl")
+		return nil, fmt.Errorf("no files found after instaloader")
 	}
 	return files, nil
 }
 
+// ===================== YT-DLP (for reels/videos) =====================
 func downloadWithYtDlp(url string, uniqueID int64, isYouTube bool) ([]string, error) {
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
 	args := []string{
@@ -216,8 +225,6 @@ func downloadWithYtDlp(url string, uniqueID int64, isYouTube bool) ([]string, er
 
 	if isYouTube && fileExists(youtubeCookiesFile) {
 		args = append(args, "--cookies", youtubeCookiesFile)
-	} else if !isYouTube && fileExists(instaCookiesFile) {
-		args = append(args, "--cookies", instaCookiesFile)
 	}
 
 	args = append(args, url)

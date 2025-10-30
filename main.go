@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"net/http" // 👈 for health check
+
 	"os"
 	"os/exec"
 	"path/filepath"
+
 	"strings"
 	"time"
 
@@ -19,21 +20,11 @@ const (
 	ffmpegPath       = "/usr/bin"
 	ytDlpPath        = "/usr/local/bin/yt-dlp"
 	galleryDlPath    = "/usr/local/bin/gallery-dl"
-	instaCookiesFile = "cookies.txt"
+	instaCookiesFile = "cookies.txt" // must include valid Instagram cookies
 	downloadsDir     = "downloads"
 )
 
-// ================== HEALTH CHECK ==================
-func startHealthServer(port string) {
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "✅ Bot is running and healthy!")
-	})
-	log.Printf("💚 Health check server listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
-}
-
-// ================== RUN COMMAND ==================
+// Run shell command and return output + error
 func runCommandCapture(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	var out bytes.Buffer
@@ -43,7 +34,7 @@ func runCommandCapture(name string, args ...string) (string, error) {
 	return out.String(), err
 }
 
-// ================== DOWNLOAD ==================
+// Core downloader
 func downloadMedia(url string) ([]string, error) {
 	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
 	isInstagram := strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am")
@@ -57,6 +48,7 @@ func downloadMedia(url string) ([]string, error) {
 	outputDir := filepath.Join(downloadsDir, fmt.Sprintf("%d", uniqueID))
 	os.MkdirAll(outputDir, 0755)
 
+	// ---------- yt-dlp ----------
 	args := []string{
 		"--no-warnings",
 		"--no-call-home",
@@ -66,6 +58,7 @@ func downloadMedia(url string) ([]string, error) {
 		url,
 	}
 
+	// Instagram requires cookies
 	if isInstagram {
 		log.Printf("🍪 Using Instagram cookies for %s", url)
 		args = append([]string{"--cookies", instaCookiesFile}, args...)
@@ -78,7 +71,8 @@ func downloadMedia(url string) ([]string, error) {
 	files, _ := filepath.Glob(filepath.Join(outputDir, "*"))
 	if len(files) == 0 || err != nil {
 		if isInstagram {
-			log.Printf("🖼️ Falling back to gallery-dl...")
+			log.Printf("🖼️ Falling back to gallery-dl for Instagram photos or carousel...")
+
 			galleryDir := filepath.Join(downloadsDir, fmt.Sprintf("%d_gallery", uniqueID))
 			os.MkdirAll(galleryDir, 0755)
 
@@ -119,27 +113,25 @@ func sendFiles(bot *tgbotapi.BotAPI, chatID int64, files []string) {
 }
 
 func main() {
-	godotenv.Load()
+	// Load environment variables
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("⚠️ Warning: .env file not found")
+	}
 
 	botToken := os.Getenv("BOT_TOKEN")
 	if botToken == "" {
 		log.Fatal("❌ BOT_TOKEN missing in .env")
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	// 🩺 Start health server in a separate goroutine
-	go startHealthServer(port)
-
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		log.Fatalf("❌ Failed to create bot: %v", err)
 	}
 
+	bot.Debug = false
 	log.Printf("🤖 Bot started as @%s", bot.Self.UserName)
+
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
@@ -150,6 +142,9 @@ func main() {
 		}
 
 		msgText := update.Message.Text
+		user := update.Message.From
+		log.Printf("💬 Message from %s: %s", user.UserName, msgText)
+
 		if msgText == "/start" {
 			startText := "👋 Welcome! Send me any video or photo link from:\n" +
 				"📺 YouTube\n📸 Instagram (posts, reels, stories, carousels)\n🎵 TikTok\n\n" +

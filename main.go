@@ -170,6 +170,8 @@ func isSupportedLink(text string) bool {
 func downloadVideo(url string) ([]string, error) {
 	uniqueID := time.Now().UnixNano()
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
+
+	// Detect platform
 	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
 	isInstagram := strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am")
 	isTikTok := strings.Contains(url, "tiktok.com")
@@ -204,10 +206,10 @@ func downloadVideo(url string) ([]string, error) {
 	// =================== STORY FIX ===================
 	if isInstagram && strings.Contains(url, "stories/") {
 		args = append(args,
-			"--compat-options", "no-youtube-unavailable-videos",
 			"--force-overwrites",
 			"--no-mtime",
-			"--write-info-json",
+			"--no-playlist",
+			"--compat-options", "no-youtube-unavailable-videos",
 		)
 	} else {
 		args = append(args, "--no-playlist")
@@ -229,7 +231,7 @@ func downloadVideo(url string) ([]string, error) {
 		args = append(args, url)
 	}
 
-	log.Printf("⚙️ Downloading with yt-dlp: %s", url)
+	log.Printf("⚙️ Running yt-dlp for: %s", url)
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 yt-dlp output:\n%s", out)
 

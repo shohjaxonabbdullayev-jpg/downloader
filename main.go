@@ -25,7 +25,7 @@ const (
 var (
 	downloadsDir       = "downloads"
 	youtubeCookiesFile = "youtube_cookies.txt"
-	sem                = make(chan struct{}, 3)
+	sem                = make(chan struct{}, 3) // concurrency limit
 )
 
 // ===================== HEALTH CHECK =====================
@@ -51,16 +51,11 @@ func main() {
 		log.Fatal("❌ BOT_TOKEN not set in environment.")
 	}
 
-	instaUser := os.Getenv("INSTA_USER")
-	instaPass := os.Getenv("INSTA_PASS")
-	if instaUser == "" || instaPass == "" {
-		log.Println("⚠️ Instagram login not set (INSTA_USER / INSTA_PASS). Instaloader may fail.")
-	}
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
+
 	go startHealthCheckServer(port)
 
 	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
@@ -178,20 +173,20 @@ func downloadMedia(url string) ([]string, error) {
 	return nil, fmt.Errorf("unsupported URL: %s", url)
 }
 
-// ===================== INSTALOADER (for photos) =====================
+// ===================== INSTALOADER (for photos/carousels) =====================
 func downloadWithInstaloader(url string, uniqueID int64) ([]string, error) {
 	outputDir := filepath.Join(downloadsDir, fmt.Sprintf("%d_instagram", uniqueID))
 	os.MkdirAll(outputDir, 0755)
 
-	instaUser := os.Getenv("INSTA_USER")
-	instaPass := os.Getenv("INSTA_PASS")
+	// Path to your saved Instaloader session file
+	sessionFile := `C:\Users\user\AppData\Local\Instaloader\session-test.4test123`
 
 	args := []string{
 		"--no-metadata-json",
+		"--no-compress-json",
 		"--dirname-pattern", outputDir,
 		"--filename-pattern", "{shortcode}",
-		"--login", instaUser,
-		"--password", instaPass,
+		"--sessionfile", sessionFile,
 		url,
 	}
 

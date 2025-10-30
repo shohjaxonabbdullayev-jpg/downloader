@@ -5,7 +5,7 @@ FROM golang:1.24.4 AS builder
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential python3 python3-pip && \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
@@ -26,26 +26,20 @@ RUN apt-get update && \
     ffmpeg \
     python3-full \
     python3-pip \
-    ca-certificates \
-    git \
-    wget && \
+    ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Create virtual environment for Python tools
-RUN python3 -m venv /opt/tools && \
-    /opt/tools/bin/pip install --no-cache-dir \
-        yt-dlp \
-        gallery-dl \
-        instaloader && \
-    ln -s /opt/tools/bin/yt-dlp /usr/local/bin/yt-dlp && \
-    ln -s /opt/tools/bin/gallery-dl /usr/local/bin/gallery-dl && \
-    ln -s /opt/tools/bin/instaloader /usr/local/bin/instaloader
+# ✅ Fix Debian PEP 668 restriction
+# create a virtual environment for yt-dlp
+RUN python3 -m venv /opt/yt && \
+    /opt/yt/bin/pip install --no-cache-dir yt-dlp && \
+    ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp
 
 WORKDIR /app
 
-COPY --from=builder /app/downloader-bot .  
-COPY cookies.txt ./cookies.txt  
-COPY downloads ./downloads  
+COPY --from=builder /app/downloader-bot .
+COPY cookies.txt ./cookies.txt
+COPY downloads ./downloads
 
 ENV PORT=10000
 EXPOSE 10000

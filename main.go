@@ -91,9 +91,30 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	chatID := msg.Chat.ID
 
-	if text == "/start" {
-		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram yoki TikTok link yuboring — men sizga videoni yuboraman."
-		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
+	switch text {
+	case "/start":
+		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram yoki TikTok link yuboring — men sizga videoni yuboraman.\n\n📢 Botdan guruhda ham foydalanish uchun quyidagi tugmadan foydalaning 👇"
+
+		addToGroupBtn := tgbotapi.NewInlineKeyboardButtonURL(
+			"➕ Guruhga qo‘shish",
+			fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
+		)
+
+		helpBtn := tgbotapi.NewInlineKeyboardButtonData("ℹ️ Yordam", "help")
+
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(addToGroupBtn),
+			tgbotapi.NewInlineKeyboardRow(helpBtn),
+		)
+
+		msgToSend := tgbotapi.NewMessage(chatID, startMsg)
+		msgToSend.ReplyMarkup = keyboard
+		bot.Send(msgToSend)
+		return
+
+	case "/help":
+		helpMsg := "❓ Agar bot bilan bog‘liq muammo bo‘lsa, admin bilan bog‘laning:\n👉 @nonfindable"
+		bot.Send(tgbotapi.NewMessage(chatID, helpMsg))
 		return
 	}
 
@@ -177,7 +198,6 @@ func downloadVideo(url string) ([]string, error) {
 		"-o", outputTemplate,
 	}
 
-	// Use cookies for Instagram/TikTok or YouTube
 	if isYouTube && fileExists(youtubeCookiesFile) {
 		args = append(args, "--cookies", youtubeCookiesFile)
 		log.Printf("🍪 Using YouTube cookies for %s", url)
@@ -186,27 +206,10 @@ func downloadVideo(url string) ([]string, error) {
 		log.Printf("🍪 Using cookies.txt for %s", url)
 	}
 
-	// Format selection
 	if isYouTube {
 		args = append(args, "-f", "bv*[height<=720]+ba/best[height<=720]/best")
 	} else {
 		args = append(args, "-f", "best")
-	}
-
-	// Handle TikTok via Snaptik if TikTok link
-	if strings.Contains(url, "tiktok.com") {
-		args = []string{
-			"--no-playlist",
-			"--no-warnings",
-			"--restrict-filenames",
-			"--merge-output-format", "mp4",
-			"--ffmpeg-location", ffmpegPath,
-			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-			"--no-check-certificates",
-			"-o", outputTemplate,
-			"-f", "best",
-			fmt.Sprintf("https://snaptik.app/en2?url=%s", url),
-		}
 	}
 
 	args = append(args, url)

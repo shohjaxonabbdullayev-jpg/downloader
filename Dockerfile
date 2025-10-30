@@ -5,16 +5,14 @@ FROM golang:1.24.4 AS builder
 
 WORKDIR /app
 
-# Install essential build tools
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# Download Go dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy and build
 COPY . .
+
 RUN go build -o downloader-bot .
 
 # ==============================
@@ -22,15 +20,28 @@ RUN go build -o downloader-bot .
 # ==============================
 FROM debian:bookworm-slim
 
-# Install system dependencies
+# Install dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
     python3-full \
     python3-pip \
-    ca-certificates \
-    curl && \
+    ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Create virtual environment and install yt-dlp + gallery-dl
+# ✅ Fix Debian PEP 668 restriction and install yt-dlp + gallery-dl
 RUN python3 -m venv /opt/tools && \
+    /opt/tools/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
+    ln -s /opt/tools/bin/yt-dlp /usr/local/bin/yt-dlp && \
+    ln -s /opt/tools/bin/gallery-dl /usr/local/bin/gallery-dl
+
+WORKDIR /app
+
+COPY --from=builder /app/downloader-bot .
+COPY cookies.txt ./cookies.txt
+COPY downloads ./downloads
+
+ENV PORT=10000
+EXPOSE 10000
+
+CMD ["/app/downloader-bot"]

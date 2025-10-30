@@ -5,33 +5,38 @@ FROM golang:1.24.4 AS builder
 
 WORKDIR /app
 
-# Install build tools only
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential ca-certificates && \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+
 RUN go build -o downloader-bot .
 
 # ==============================
-# 🚀 STAGE 2 — Runtime image
+# 🚀 STAGE 2 — Final lightweight image
 # ==============================
-FROM python:3.12-slim
+FROM debian:bookworm-slim
+
+# Install dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ffmpeg \
+    python3-full \
+    python3-pip \
+    ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ✅ Fix Debian PEP 668 restriction
+# create a virtual environment for yt-dlp
+RUN python3 -m venv /opt/yt && \
+    /opt/yt/bin/pip install --no-cache-dir yt-dlp && \
+    ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp
 
 WORKDIR /app
 
-# Install ffmpeg and system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg ca-certificates && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Install Python tools for media downloads
-RUN pip install --no-cache-dir yt-dlp gallery-dl instaloader
-
-# Copy Go binary and resources
 COPY --from=builder /app/downloader-bot .
 COPY cookies.txt ./cookies.txt
 COPY downloads ./downloads
@@ -39,4 +44,4 @@ COPY downloads ./downloads
 ENV PORT=10000
 EXPOSE 10000
 
-CMD ["./downloader-bot"]
+CMD ["/app/downloader-bot"]

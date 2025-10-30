@@ -15,7 +15,6 @@ COPY . .
 
 RUN go build -o downloader-bot .
 
-
 # ==============================
 # 🚀 STAGE 2 — Final lightweight image
 # ==============================
@@ -30,23 +29,19 @@ RUN apt-get update && \
     ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Fix Debian PEP 668 restriction & install yt-dlp + gallery-dl
-RUN python3 -m venv /opt/yt && \
-    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
-    ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
-    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
+# ✅ Fix Debian PEP 668 restriction and install yt-dlp + gallery-dl
+RUN python3 -m venv /opt/tools && \
+    /opt/tools/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
+    ln -s /opt/tools/bin/yt-dlp /usr/local/bin/yt-dlp && \
+    ln -s /opt/tools/bin/gallery-dl /usr/local/bin/gallery-dl
 
-# Working directory
 WORKDIR /app
 
-# Copy bot binary and other necessary files
 COPY --from=builder /app/downloader-bot .
 COPY cookies.txt ./cookies.txt
 COPY downloads ./downloads
 
-# Set environment variables
 ENV PORT=10000
 EXPOSE 10000
 
-# Run the Go bot
 CMD ["/app/downloader-bot"]

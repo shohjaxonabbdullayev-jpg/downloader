@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -93,7 +94,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 
 	if text == "/start" {
-		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram, TikTok yoki Pinterest link yuboring — men sizga videoni yuboraman."
+		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram, TikTok yoki Pinterest link yuboring — men sizga videoni yoki rasmni yuboraman."
 		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
 	}
@@ -137,10 +138,24 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 				return
 			}
 
-			if len(files) > 0 {
-				sendVideoWithButton(bot, chatID, files[0], replyToID)
-			} else {
+			if len(files) == 0 {
 				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi: fayl topilmadi."))
+				return
+			}
+
+			// Choose newest file out of results
+			sort.Slice(files, func(i, j int) bool {
+				fi, _ := os.Stat(files[i])
+				fj, _ := os.Stat(files[j])
+				return fi.ModTime().After(fj.ModTime())
+			})
+			target := files[0]
+
+			ext := strings.ToLower(filepath.Ext(target))
+			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp" {
+				sendPhoto(bot, chatID, target, replyToID)
+			} else {
+				sendVideoWithButton(bot, chatID, target, replyToID)
 			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
 	}
@@ -177,6 +192,7 @@ func resolveShortLink(url string) string {
 	}
 
 	client := &http.Client{
+		// allow redirects so resp.Request.URL gets final url
 		CheckRedirect: func(req *http.Request, via []*http.Request) error { return nil },
 		Timeout:       10 * time.Second,
 	}
@@ -194,6 +210,7 @@ func resolveShortLink(url string) string {
 
 // ===================== DOWNLOAD FUNCTION =====================
 func downloadMedia(url string) ([]string, error) {
+	start := time.Now()
 	uniqueID := time.Now().UnixNano()
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
 
@@ -239,34 +256,57 @@ func downloadMedia(url string) ([]string, error) {
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 yt-dlp output:\n%s", out)
 
-	// Fallback to gallery-dl for Instagram or Pinterest
-	if err != nil || isPinterest || isInstagram {
-		log.Printf("⚠️ Trying gallery-dl for %s", url)
+	// Check for "No video formats found" or similar messages in output
+	noVideo := strings.Contains(strings.ToLower(out), "no video formats found") ||
+		strings.Contains(strings.ToLower(out), "didn't find any videos") ||
+		strings.Contains(strings.ToLower(out), "no video formats")
+
+	// Gather files produced by yt-dlp (we used uniqueID prefix)
+	globPattern := filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID))
+	files, _ := filepath.Glob(globPattern)
+
+	// If yt-dlp returned an error OR produced no files OR it printed "No video formats found"
+	// OR if it's Pinterest (prefer gallery-dl for images/boards), try gallery-dl fallback.
+	if err != nil || len(files) == 0 || noVideo || isPinterest {
+		log.Printf("⚠️ yt-dlp didn't produce media or Pinterest/Instagram detected — trying gallery-dl for %s", url)
+
+		// gallery-dl: download into downloadsDir
 		gArgs := []string{"-d", downloadsDir, url}
 		out2, gErr := runCommandCapture("gallery-dl", gArgs...)
 		log.Printf("🖼️ gallery-dl output:\n%s", out2)
 		if gErr == nil {
-			files, _ := filepath.Glob(filepath.Join(downloadsDir, "*"))
-			if len(files) > 0 {
-				return files, nil
+			// pick files created after start time
+			candidates := filesCreatedAfter(downloadsDir, start)
+			if len(candidates) > 0 {
+				log.Printf("✅ gallery-dl downloaded %d files; returning newest", len(candidates))
+				return candidates, nil
 			}
+			// As a fallback, return any file in downloads dir (newest)
+			all := listAllFiles(downloadsDir)
+			if len(all) > 0 {
+				return all, nil
+			}
+		} else {
+			log.Printf("⚠️ gallery-dl error: %v", gErr)
 		}
 	}
 
-	files, _ := filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
-	if len(files) == 0 {
-		time.Sleep(1 * time.Second)
-		files, _ = filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
-		if len(files) == 0 {
-			return nil, fmt.Errorf("no file found after download")
-		}
+	// If yt-dlp worked and produced files, return them
+	if len(files) > 0 {
+		return files, nil
 	}
 
-	log.Printf("✅ Download complete: %s", files[0])
-	return files, nil
+	// final attempt: find any file created after start (maybe gallery-dl created something even on error)
+	candidates := filesCreatedAfter(downloadsDir, start)
+	if len(candidates) > 0 {
+		return candidates, nil
+	}
+
+	return nil, fmt.Errorf("no file downloaded for %s", url)
 }
 
 // ===================== HELPERS =====================
+
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
@@ -281,8 +321,47 @@ func runCommandCapture(name string, args ...string) (string, error) {
 	return combined.String(), err
 }
 
+// listAllFiles returns all non-directory files inside dir (full paths), newest first
+func listAllFiles(dir string) []string {
+	var files []string
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return files
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		files = append(files, filepath.Join(dir, e.Name()))
+	}
+	// sort newest first
+	sort.Slice(files, func(i, j int) bool {
+		fi, _ := os.Stat(files[i])
+		fj, _ := os.Stat(files[j])
+		return fi.ModTime().After(fj.ModTime())
+	})
+	return files
+}
+
+// filesCreatedAfter returns files in dir with ModTime after t (newest first)
+func filesCreatedAfter(dir string, t time.Time) []string {
+	all := listAllFiles(dir)
+	var res []string
+	for _, f := range all {
+		fi, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		if fi.ModTime().After(t.Add(-1 * time.Second)) {
+			res = append(res, f)
+		}
+	}
+	return res
+}
+
 // ===================== SENDERS =====================
 func sendVideoWithButton(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
+	// Try sending as video first
 	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 	video.Caption = "@downloaderin123_bot orqali yuklab olindi"
 	video.ReplyToMessageID = replyToMessageID
@@ -292,10 +371,26 @@ func sendVideoWithButton(bot *tgbotapi.BotAPI, chatID int64, filePath string, re
 	video.ReplyMarkup = keyboard
 
 	if _, err := bot.Send(video); err != nil {
-		log.Printf("❌ Failed to send video %s: %v", filePath, err)
+		log.Printf("❌ Failed to send video %s: %v, trying as document", filePath, err)
 		sendDocument(bot, chatID, filePath, replyToMessageID)
 	} else {
-		os.Remove(filePath)
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("⚠️ Failed to delete file after sending video %s: %v", filePath, err)
+		}
+	}
+}
+
+func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
+	photo.Caption = "@downloaderin123_bot orqali yuklab olindi"
+	photo.ReplyToMessageID = replyToMessageID
+	if _, err := bot.Send(photo); err != nil {
+		log.Printf("❌ Failed to send photo %s: %v — falling back to document", filePath, err)
+		sendDocument(bot, chatID, filePath, replyToMessageID)
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("⚠️ Failed to delete file after sending photo %s: %v", filePath, err)
+		}
 	}
 }
 
@@ -303,6 +398,13 @@ func sendDocument(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMe
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 	doc.Caption = "⚠️ Fayl hajmi katta bo‘lgani uchun hujjat sifatida yuborildi."
 	doc.ReplyToMessageID = replyToMessageID
-	bot.Send(doc)
-	os.Remove(filePath)
+	if _, err := bot.Send(doc); err != nil {
+		log.Printf("❌ Failed to send document %s: %v", filePath, err)
+		// If everything fails, just notify user (leave file for manual inspection)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Faylni yuborib bo‘lmadi."))
+	} else {
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("⚠️ Failed to delete file after sending document %s: %v", filePath, err)
+		}
+	}
 }

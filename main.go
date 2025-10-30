@@ -22,10 +22,11 @@ const (
 )
 
 var (
-	downloadsDir       = "downloads"
-	instaCookiesFile   = "cookies.txt"
-	youtubeCookiesFile = "youtube_cookies.txt"
-	sem                = make(chan struct{}, 3) // Limit concurrent downloads
+	downloadsDir         = "downloads"
+	instaCookiesFile     = "cookies.txt"
+	youtubeCookiesFile   = "youtube_cookies.txt"
+	pinterestCookiesFile = "pinterest_cookies.txt"
+	sem                  = make(chan struct{}, 3) // Limit concurrent downloads
 )
 
 // ===================== HEALTH CHECK SERVER =====================
@@ -92,7 +93,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 
 	if text == "/start" {
-		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram yoki TikTok link yuboring — men sizga videoni yuboraman."
+		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram, TikTok yoki Pinterest link yuboring — men sizga videoni yuboraman."
 		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
 	}
@@ -157,15 +158,18 @@ func isSupportedLink(text string) bool {
 		strings.Contains(text, "youtu.be") ||
 		strings.Contains(text, "instagram.com") ||
 		strings.Contains(text, "instagr.am") ||
-		strings.Contains(text, "tiktok.com")
+		strings.Contains(text, "tiktok.com") ||
+		strings.Contains(text, "pinterest.com")
 }
 
 // ===================== DOWNLOAD FUNCTION =====================
 func downloadVideo(url string) ([]string, error) {
 	uniqueID := time.Now().UnixNano()
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
+
 	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
 	isInstagram := strings.Contains(url, "instagram.com")
+	isPinterest := strings.Contains(url, "pinterest.com")
 
 	args := []string{
 		"--no-playlist",
@@ -178,19 +182,28 @@ func downloadVideo(url string) ([]string, error) {
 		"-o", outputTemplate,
 	}
 
-	// Use cookies for sites that need authentication
+	// Cookies for authenticated sites
 	if isYouTube && fileExists(youtubeCookiesFile) {
 		args = append(args, "--cookies", youtubeCookiesFile)
 		log.Printf("🍪 Using YouTube cookies for %s", url)
 	} else if isInstagram && fileExists(instaCookiesFile) {
 		args = append(args, "--cookies", instaCookiesFile)
 		log.Printf("🍪 Using Instagram cookies for %s", url)
+	} else if isPinterest && fileExists(pinterestCookiesFile) {
+		args = append(args, "--cookies", pinterestCookiesFile)
+		log.Printf("🍪 Using Pinterest cookies for %s", url)
 	}
 
-	// Handle Instagram Stories
+	// Instagram Stories
 	if isInstagram && (strings.Contains(url, "/stories/") || strings.Contains(url, "/s/")) {
 		args = append(args, "--download-archive", "insta_stories_archive.txt", "--compat-options", "no-youtube-unavailable-videos")
 		log.Printf("📸 Detected Instagram Story URL: %s", url)
+	}
+
+	// Pinterest Board
+	if isPinterest && strings.Contains(url, "/board/") {
+		args = append(args, "--yes-playlist")
+		log.Printf("📌 Detected Pinterest Board URL: %s", url)
 	}
 
 	// Format selection

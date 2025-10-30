@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ffmpegPath = "/usr/bin"
+	ffmpegPath = "/usr/bin" // For Render/Docker Linux
 	ytDlpPath  = "yt-dlp"
 )
 
@@ -25,7 +25,7 @@ var (
 	downloadsDir       = "downloads"
 	instaCookiesFile   = "cookies.txt"
 	youtubeCookiesFile = "youtube_cookies.txt"
-	sem                = make(chan struct{}, 3)
+	sem                = make(chan struct{}, 3) // limit concurrent downloads
 )
 
 // ===================== HEALTH CHECK SERVER =====================
@@ -34,7 +34,6 @@ func startHealthCheckServer(port string) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "✅ Bot is running and healthy!")
 	})
-
 	log.Printf("💚 Starting health check server on port %s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("❌ Health check server failed: %v", err)
@@ -44,7 +43,7 @@ func startHealthCheckServer(port string) {
 // ===================== MAIN =====================
 func main() {
 	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️ .env file not found, using system environment")
+		log.Println("⚠️ .env file not found, using system environment variables")
 	}
 
 	token := os.Getenv("BOT_TOKEN")
@@ -60,12 +59,12 @@ func main() {
 	go startHealthCheckServer(port)
 
 	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
-		log.Fatalf("❌ Failed to create downloads folder: %v", err)
+		log.Fatalf("❌ Failed to create downloads directory: %v", err)
 	}
 
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
-		log.Fatalf("❌ Bot init failed: %v", err)
+		log.Fatalf("❌ Failed to initialize bot: %v", err)
 	}
 
 	log.Printf("🤖 Bot authorized as @%s", bot.Self.UserName)
@@ -91,9 +90,15 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	chatID := msg.Chat.ID
 
-	if text == "/start" {
+	switch text {
+	case "/start":
 		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram yoki TikTok link yuboring — men sizga videoni yuboraman.\n\n📸 Endi Instagram Stories-ni ham yuklash mumkin!"
 		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
+		return
+
+	case "/help":
+		helpMsg := "ℹ️ Bot haqida:\n\n📹 YouTube, Instagram, TikTok videolarini yuklab beradi.\n📸 Instagram Stories-ni ham yuklash mumkin.\n\nAgar muammo bo‘lsa, bog‘laning: @nonfindable"
+		bot.Send(tgbotapi.NewMessage(chatID, helpMsg))
 		return
 	}
 
@@ -116,6 +121,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, err := downloadVideo(url)
 			<-sem
 
+			// remove loading message
 			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 				ChatID:    chatID,
 				MessageID: loadingMsgID,
@@ -165,44 +171,63 @@ func downloadVideo(url string) ([]string, error) {
 	uniqueID := time.Now().UnixNano()
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
 	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
-	isInstagram := strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am") // 🆕 ADDED
+	isInstagram := strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am")
+	isTikTok := strings.Contains(url, "tiktok.com")
 
 	args := []string{
-		"--no-playlist",
 		"--no-warnings",
 		"--restrict-filenames",
 		"--merge-output-format", "mp4",
 		"--ffmpeg-location", ffmpegPath,
 		"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-		"--no-check-certificates",
 		"-o", outputTemplate,
 	}
 
-	// Use cookies for Instagram, TikTok, YouTube
+	// =================== COOKIES ===================
 	if isYouTube && fileExists(youtubeCookiesFile) {
 		args = append(args, "--cookies", youtubeCookiesFile)
 		log.Printf("🍪 Using YouTube cookies for %s", url)
-	} else if isInstagram && fileExists(instaCookiesFile) { // 🆕 MODIFIED
+	} else if isInstagram && fileExists(instaCookiesFile) {
 		args = append(args, "--cookies", instaCookiesFile)
 		log.Printf("🍪 Using Instagram cookies for %s", url)
 	} else if !isYouTube && fileExists(instaCookiesFile) {
 		args = append(args, "--cookies", instaCookiesFile)
-		log.Printf("🍪 Using cookies.txt for %s", url)
 	}
 
-	// 🆕 Instagram story support: force yt-dlp to check stories
-	if isInstagram && strings.Contains(url, "stories/") {
-		args = append(args, "--flat-playlist", "--compat-options", "no-youtube-unavailable-videos")
-	}
-
-	// Format selection
+	// =================== FORMAT ===================
 	if isYouTube {
 		args = append(args, "-f", "bv*[height<=720]+ba/best[height<=720]/best")
 	} else {
 		args = append(args, "-f", "best")
 	}
 
-	args = append(args, url)
+	// =================== STORY FIX ===================
+	if isInstagram && strings.Contains(url, "stories/") {
+		args = append(args,
+			"--compat-options", "no-youtube-unavailable-videos",
+			"--force-overwrites",
+			"--no-mtime",
+			"--write-info-json",
+		)
+	} else {
+		args = append(args, "--no-playlist")
+	}
+
+	// =================== TIKTOK FIX ===================
+	if isTikTok {
+		args = []string{
+			"--no-warnings",
+			"--restrict-filenames",
+			"--merge-output-format", "mp4",
+			"--ffmpeg-location", ffmpegPath,
+			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+			"-o", outputTemplate,
+			"-f", "best",
+			url,
+		}
+	} else {
+		args = append(args, url)
+	}
 
 	log.Printf("⚙️ Downloading with yt-dlp: %s", url)
 	out, err := runCommandCapture(ytDlpPath, args...)
@@ -240,7 +265,7 @@ func runCommandCapture(name string, args ...string) (string, error) {
 	return combined.String(), err
 }
 
-// ===================== SENDERS =====================
+// ===================== SENDER FUNCTIONS =====================
 func sendVideo(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
 	msg := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 	msg.Caption = "🎥 Video"

@@ -241,7 +241,7 @@ func runCommandCapture(name string, args ...string) (string, error) {
 // ===================== SENDERS =====================
 func sendVideoWithButton(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessageID int) {
 	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
-	video.Caption = "🎥 Video tayyor!"
+	video.Caption = "@downloaderin123_bot orqali yuklab olindi"
 	video.ReplyToMessageID = replyToMessageID
 
 	// Add "Guruhga qo‘shish" button

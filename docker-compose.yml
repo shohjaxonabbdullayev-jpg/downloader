@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: downloader-bot
+    restart: always
+    env_file:
+      - app/.env
+    depends_on:
+      - metube
+    ports:
+      - "10000:10000"
+
+  metube:
+    image: ghcr.io/alexta69/metube:latest
+    container_name: metube
+    restart: always
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./downloads:/downloads

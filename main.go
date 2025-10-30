@@ -16,10 +16,12 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// ===================== CONSTANTS =====================
 const (
 	ffmpegPath     = "/usr/bin"
 	ytDlpPath      = "yt-dlp"
 	instaloaderCmd = "instaloader"
+	galleryDlCmd   = "gallery-dl"
 )
 
 var (
@@ -54,7 +56,7 @@ func main() {
 	instaUser := os.Getenv("INSTA_USER")
 	instaPass := os.Getenv("INSTA_PASS")
 	if instaUser == "" || instaPass == "" {
-		log.Println("⚠️ Instagram login not set (INSTA_USER / INSTA_PASS). Instaloader may fail for private posts.")
+		log.Println("⚠️ Instagram login not set (INSTA_USER / INSTA_PASS). Instaloader may fail.")
 	}
 
 	port := os.Getenv("PORT")
@@ -94,7 +96,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 
 	if text == "/start" {
-		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram, TikTok yoki Pinterest link yuboring — men sizga media faylni yuboraman."
+		startMsg := "👋 Salom!\n\n🎥 Menga YouTube, Instagram, TikTok yoki Pinterest link yuboring — men sizga videoni yoki rasmini yuboraman."
 		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
 	}
@@ -120,7 +122,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: loadMsgID})
 
 			if err != nil {
-				log.Printf("❌ Error: %v", err)
+				log.Printf("❌ Download error for %s: %v", url, err)
 				errMsg := tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Linkni tekshiring.")
 				errMsg.ReplyToMessageID = msgID
 				bot.Send(errMsg)
@@ -160,31 +162,25 @@ func isSupportedLink(link string) bool {
 func downloadMedia(url string) ([]string, error) {
 	uniqueID := time.Now().UnixNano()
 
-	isInstagram := strings.Contains(url, "instagram.com")
-	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
-	isTikTok := strings.Contains(url, "tiktok.com")
-	isPinterest := strings.Contains(url, "pinterest.com")
-
-	if isInstagram {
+	if strings.Contains(url, "instagram.com") {
 		if strings.Contains(url, "/p/") {
 			return downloadWithInstaloader(url, uniqueID)
-		} else if strings.Contains(url, "/reel/") || strings.Contains(url, "/stories/") {
-			return downloadWithYtDlp(url, uniqueID, false)
 		}
+		return downloadWithYtDlp(url, uniqueID)
 	}
 
-	if isYouTube || isTikTok {
-		return downloadWithYtDlp(url, uniqueID, isYouTube)
+	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") || strings.Contains(url, "tiktok.com") {
+		return downloadWithYtDlp(url, uniqueID)
 	}
 
-	if isPinterest {
-		return downloadWithGalleryDL(url, uniqueID)
+	if strings.Contains(url, "pinterest.com") {
+		return downloadWithGalleryDl(url, uniqueID)
 	}
 
 	return nil, fmt.Errorf("unsupported URL: %s", url)
 }
 
-// ===================== INSTALOADER =====================
+// ===================== INSTALOADER (for photos) =====================
 func downloadWithInstaloader(url string, uniqueID int64) ([]string, error) {
 	outputDir := filepath.Join(downloadsDir, fmt.Sprintf("%d_instagram", uniqueID))
 	os.MkdirAll(outputDir, 0755)
@@ -216,8 +212,40 @@ func downloadWithInstaloader(url string, uniqueID int64) ([]string, error) {
 	return files, nil
 }
 
-// ===================== YT-DLP =====================
-func downloadWithYtDlp(url string, uniqueID int64, isYouTube bool) ([]string, error) {
+// ===================== GALLERY-DL (for Pinterest/images) =====================
+func downloadWithGalleryDl(url string, uniqueID int64) ([]string, error) {
+	outputDir := filepath.Join(downloadsDir, fmt.Sprintf("%d_pinterest", uniqueID))
+	os.MkdirAll(outputDir, 0755)
+
+	args := []string{
+		"-d", outputDir,
+		url,
+	}
+
+	log.Printf("📌 Downloading Pinterest content via gallery-dl: %s", url)
+	out, err := runCommandCapture(galleryDlCmd, args...)
+	log.Printf("📄 gallery-dl output:\n%s", out)
+
+	if err != nil {
+		return nil, fmt.Errorf("gallery-dl failed: %v", err)
+	}
+
+	var files []string
+	filepath.Walk(outputDir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			files = append(files, path)
+		}
+		return nil
+	})
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no files found after gallery-dl")
+	}
+	return files, nil
+}
+
+// ===================== YT-DLP (for videos) =====================
+func downloadWithYtDlp(url string, uniqueID int64) ([]string, error) {
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
 	args := []string{
 		"--no-playlist",
@@ -227,18 +255,16 @@ func downloadWithYtDlp(url string, uniqueID int64, isYouTube bool) ([]string, er
 		"--ffmpeg-location", ffmpegPath,
 		"--no-check-certificates",
 		"-o", outputTemplate,
+		url,
 	}
 
-	if isYouTube && fileExists(youtubeCookiesFile) {
+	if fileExists(youtubeCookiesFile) {
 		args = append(args, "--cookies", youtubeCookiesFile)
 	}
-
-	args = append(args, url)
 
 	log.Printf("🎬 Downloading with yt-dlp: %s", url)
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("📄 yt-dlp output:\n%s", out)
-
 	if err != nil {
 		return nil, fmt.Errorf("yt-dlp failed: %v", err)
 	}
@@ -246,28 +272,6 @@ func downloadWithYtDlp(url string, uniqueID int64, isYouTube bool) ([]string, er
 	files, _ := filepath.Glob(filepath.Join(downloadsDir, fmt.Sprintf("%d_*.*", uniqueID)))
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no file found after yt-dlp download")
-	}
-	return files, nil
-}
-
-// ===================== GALLERY-DL =====================
-func downloadWithGalleryDL(url string, uniqueID int64) ([]string, error) {
-	outputDir := filepath.Join(downloadsDir, fmt.Sprintf("%d_pinterest", uniqueID))
-	os.MkdirAll(outputDir, 0755)
-
-	args := []string{"-d", outputDir, url}
-
-	log.Printf("📌 Downloading Pinterest content via gallery-dl: %s", url)
-	out, err := runCommandCapture("gallery-dl", args...)
-	log.Printf("📄 gallery-dl output:\n%s", out)
-
-	if err != nil {
-		return nil, fmt.Errorf("gallery-dl failed: %v", err)
-	}
-
-	files, _ := filepath.Glob(filepath.Join(outputDir, "*"))
-	if len(files) == 0 {
-		return nil, fmt.Errorf("no files found after gallery-dl")
 	}
 	return files, nil
 }
@@ -289,11 +293,44 @@ func fileExists(path string) bool {
 
 // ===================== SENDERS =====================
 func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToID int) {
-	if strings.HasSuffix(strings.ToLower(filePath), ".jpg") || strings.HasSuffix(strings.ToLower(filePath), ".png") {
+	filePath = findActualFile(filePath)
+	if filePath == "" {
+		log.Println("❌ No valid file found to send.")
+		return
+	}
+
+	if strings.HasSuffix(strings.ToLower(filePath), ".jpg") || strings.HasSuffix(strings.ToLower(filePath), ".png") || strings.HasSuffix(strings.ToLower(filePath), ".jpeg") {
 		sendPhoto(bot, chatID, filePath, replyToID)
 	} else {
 		sendVideo(bot, chatID, filePath, replyToID)
 	}
+}
+
+// ✅ Recursively find a real file
+func findActualFile(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	if !info.IsDir() {
+		return path
+	}
+
+	files, err := os.ReadDir(path)
+	if err != nil {
+		return ""
+	}
+	for _, f := range files {
+		fp := filepath.Join(path, f.Name())
+		if !f.IsDir() {
+			return fp
+		}
+		deep := findActualFile(fp)
+		if deep != "" {
+			return deep
+		}
+	}
+	return ""
 }
 
 func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToID int) {

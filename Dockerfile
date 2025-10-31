@@ -1,59 +1,44 @@
-# ============================
-# 🏗️ STAGE 1 — Build Go binary
-# ============================
-FROM golang:1.24.4 AS builder
+# ---------- Stage 1: Build Go binary ----------
+FROM golang:1.22 AS builder
 
+# Set working directory
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
-    rm -rf /var/lib/apt/lists/*
-
+# Copy go files
 COPY go.mod go.sum ./
 RUN go mod download
 
+# Copy the rest of the source code
 COPY . .
 
-RUN go build -o downloader-bot .
+# Build the Go binary
+RUN go build -o bot .
 
-# ==============================
-# 🚀 STAGE 2 — Final lightweight image
-# ==============================
-FROM debian:bookworm-slim
+# ---------- Stage 2: Runtime environment ----------
+FROM python:3.11-slim
 
-# Install runtime dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    ffmpeg \
-    python3-full \
-    python3-pip \
-    ca-certificates \
-    curl \
-    wget \
-    git && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+# Install system dependencies (ffmpeg, curl)
+RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
 
-# ✅ Fix Debian PEP 668 restriction — create isolated venv
-RUN python3 -m venv /opt/yt && \
-    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
-    ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
-    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
+# Install yt-dlp and gallery-dl
+RUN pip install --no-cache-dir yt-dlp gallery-dl
 
-# Create app directory
+# Create working directory
 WORKDIR /app
 
-# Copy Go binary
-COPY --from=builder /app/downloader-bot .
+# Copy compiled binary from builder
+COPY --from=builder /app/bot /app/bot
 
-# Optional cookies and download folder
-COPY cookies.txt ./cookies.txt
-RUN mkdir -p downloads
+# Copy any additional resources (e.g., cookies.txt if exists)
+COPY cookies.txt /app/cookies.txt
+COPY .env /app/.env
 
-# Set environment variables
-ENV PORT=10000
+# Create downloads directory
+RUN mkdir -p /app/downloads
+
+# Expose the health check port
 EXPOSE 10000
 
-# Health check (optional but recommended)
-HEALTHCHECK CMD curl -f http://localhost:${PORT}/health || exit 1
+# Run the bot
+CMD ["./bot"]
 
-# Run bot
-CMD ["/app/downloader-bot"]

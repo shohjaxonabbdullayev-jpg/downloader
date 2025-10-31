@@ -18,14 +18,14 @@ import (
 )
 
 const (
-	ffmpegPath = "/usr/bin" // path to ffmpeg in your system
-	ytDlpPath  = "yt-dlp"
+	ffmpegPath       = "/usr/bin" // adjust if needed
+	ytDlpPath        = "yt-dlp"
+	instaCookiesFile = "cookies.txt"
 )
 
 var (
-	downloadsDir     = "downloads"
-	instaCookiesFile = "cookies.txt"
-	sem              = make(chan struct{}, 3) // limit concurrent downloads
+	downloadsDir = "downloads"
+	sem          = make(chan struct{}, 3) // concurrent downloads limit
 )
 
 // ===================== HEALTH CHECK SERVER =====================
@@ -91,7 +91,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 
 	if text == "/start" {
-		startMsg := fmt.Sprintf("👋 Salom %s!\n\n🎥 Menga YouTube, Instagram yoki Pinterest link yuboring — men sizga videoni yoki rasmni yuboraman.", msg.From.UserName)
+		startMsg := fmt.Sprintf("👋 Salom %s!\n\n🎥 Menga YouTube, Instagram (post/story) yoki Pinterest link yuboring — men sizga videoni yoki rasmni yuboraman.", msg.From.UserName)
 		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
 	}
@@ -112,7 +112,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := downloadMedia(url)
 			<-sem
 
-			// remove loading message
+			// Remove loading message
 			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 				ChatID:    chatID,
 				MessageID: loadingMsgID,
@@ -120,7 +120,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 			if err != nil {
 				log.Printf("❌ Download error for %s: %v", url, err)
-				errorMsg := tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Linkni tekshiring.")
+				errorMsg := tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Linkni tekshiring yoki Instagram story uchun cookies.txt kerak.")
 				errorMsg.ReplyToMessageID = replyToID
 				bot.Send(errorMsg)
 				return
@@ -173,20 +173,33 @@ func downloadMedia(url string) ([]string, string, error) {
 	mediaType := "video"
 
 	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") {
-		// Force 720p MP4 and recode to mp4 to avoid WebM merging issues
+		// YouTube: force 720p MP4
 		args = append(args,
 			"-f", "bestvideo[height<=720]+bestaudio/best",
 			"--recode-video", "mp4",
 			"--merge-output-format", "mp4",
+			url,
 		)
 	} else if strings.Contains(url, "instagram.com") {
-		// Instagram stories/videos
-		if fileExists(instaCookiesFile) {
-			args = append(args, "--cookies", instaCookiesFile)
+		// Instagram posts or stories
+		args = append(args, url)
+
+		if strings.Contains(url, "/stories/") {
+			mediaType = "video"
+			if fileExists(instaCookiesFile) {
+				args = append(args, "--cookies", instaCookiesFile)
+			} else {
+				log.Println("⚠️ Instagram story detected, but cookies.txt not found.")
+			}
+			args = append(args, "--recode-video", "mp4")
+		} else {
+			// Regular Instagram post/video
+			if fileExists(instaCookiesFile) {
+				args = append(args, "--cookies", instaCookiesFile)
+			}
 		}
-		mediaType = "video"
 	} else if strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it") {
-		// Use gallery-dl for images
+		// Pinterest: use gallery-dl
 		out, err := runCommandCapture("gallery-dl", "-d", downloadsDir, url)
 		log.Printf("🖼️ gallery-dl output:\n%s", out)
 		if err != nil {
@@ -196,7 +209,6 @@ func downloadMedia(url string) ([]string, string, error) {
 		return files, "image", nil
 	}
 
-	args = append(args, url)
 	log.Printf("⚙️ Downloading: %s", url)
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 yt-dlp output:\n%s", out)
@@ -265,7 +277,6 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessa
 			log.Printf("❌ Failed to send photo %s: %v", filePath, err)
 		}
 	} else {
-		// Send video as document to bypass Telegram size limits
 		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 		doc.Caption = "@downloader_bot orqali yuklab olindi"
 		doc.ReplyToMessageID = replyToMessageID

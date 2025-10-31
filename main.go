@@ -168,18 +168,15 @@ func downloadMedia(url string) ([]string, string, error) {
 
 	switch {
 	case strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be"):
-		// YouTube regular or Shorts
 		args = append(args, "-f", "bestvideo[height<=720]+bestaudio/best", "--recode-video", "mp4", "--merge-output-format", "mp4", url)
 
 	case strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am"):
 		if strings.Contains(url, "/stories/") {
-			// Instagram story requires cookies
 			if !fileExists(instaCookiesFile) {
 				return nil, "", fmt.Errorf("cookies.txt required for story download")
 			}
 			args = append(args, "--cookies", instaCookiesFile, "--recode-video", "mp4", url)
 		} else {
-			// Reels or posts
 			if fileExists(instaCookiesFile) {
 				args = append(args, "--cookies", instaCookiesFile)
 			}
@@ -187,13 +184,11 @@ func downloadMedia(url string) ([]string, string, error) {
 		}
 
 	case strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it"):
-		// Pinterest: try yt-dlp first for video
 		out, err := runCommandCapture(ytDlpPath, append(args, url)...)
 		if err == nil && out != "" {
 			files := filesCreatedAfter(downloadsDir, start)
 			return files, mediaType, nil
 		}
-		// fallback to gallery-dl for images
 		out, err = runCommandCapture("gallery-dl", "-d", downloadsDir, url)
 		if err != nil {
 			return nil, "", err
@@ -261,35 +256,33 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyToMessa
 	buttonGroup := tgbotapi.NewInlineKeyboardButtonURL("➕ Guruhga qo'shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(buttonShare, buttonGroup))
 
-	info, err := os.Stat(filePath)
-	if err != nil {
-		log.Printf("❌ Could not stat file: %v", err)
-		return
-	}
-
-	// If file too large, send link instead
-	if info.Size() > maxTelegramSize {
-		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ File too large to send on Telegram. Download link: %s", filePath))
-		msg.ReplyToMessageID = replyToMessageID
-		bot.Send(msg)
-		return
-	}
-
 	if mediaType == "image" {
 		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 		photo.Caption = "@downloader_bot orqali yuklab olindi"
 		photo.ReplyToMessageID = replyToMessageID
 		photo.ReplyMarkup = keyboard
-		if _, err := bot.Send(photo); err != nil {
-			log.Printf("❌ Failed to send photo %s: %v", filePath, err)
-		}
+		bot.Send(photo)
+		return
+	}
+
+	if strings.Contains(url, "instagram.com") && strings.Contains(url, "/stories/") {
+		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+		video.Caption = "@downloader_bot orqali yuklab olindi"
+		video.ReplyToMessageID = replyToMessageID
+		video.ReplyMarkup = keyboard
+		bot.Send(video)
 	} else {
-		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
-		doc.Caption = "@downloader_bot orqali yuklab olindi"
-		doc.ReplyToMessageID = replyToMessageID
-		doc.ReplyMarkup = keyboard
-		if _, err := bot.Send(doc); err != nil {
-			log.Printf("❌ Failed to send document %s: %v", filePath, err)
+		info, _ := os.Stat(filePath)
+		if info.Size() > maxTelegramSize {
+			msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Video too large for Telegram. Download link: %s", filePath))
+			msg.ReplyToMessageID = replyToMessageID
+			bot.Send(msg)
+		} else {
+			doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
+			doc.Caption = "@downloader_bot orqali yuklab olindi"
+			doc.ReplyToMessageID = replyToMessageID
+			doc.ReplyMarkup = keyboard
+			bot.Send(doc)
 		}
 	}
 

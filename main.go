@@ -18,14 +18,14 @@ import (
 )
 
 const (
-	ffmpegPath = "/usr/bin" // path to ffmpeg
+	ffmpegPath = "/usr/bin" // path to ffmpeg in Docker
 	ytDlpPath  = "yt-dlp"
 )
 
 var (
 	downloadsDir = "downloads"
 	cookiesFile  = "cookies.txt"
-	sem          = make(chan struct{}, 3) // concurrent downloads limit
+	sem          = make(chan struct{}, 3) // limit concurrent downloads
 )
 
 // ===================== HEALTH CHECK SERVER =====================
@@ -42,9 +42,7 @@ func startHealthCheckServer(port string) {
 
 // ===================== MAIN =====================
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️ .env file not found, using system environment")
-	}
+	_ = godotenv.Load()
 
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
@@ -53,7 +51,7 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "10000"
 	}
 
 	go startHealthCheckServer(port)
@@ -112,7 +110,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := downloadMedia(url)
 			<-sem
 
-			// remove loading message
 			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 				ChatID:    chatID,
 				MessageID: loadingMsgID,
@@ -159,18 +156,18 @@ func isSupportedLink(text string) bool {
 // ===================== DOWNLOAD FUNCTION =====================
 func downloadMedia(url string) ([]string, string, error) {
 	start := time.Now()
-	uniqueID := time.Now().UnixNano()
-	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
+	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().UnixNano()))
 
-	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") {
+	switch {
+	case strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be"):
 		return downloadYouTube(url, outputTemplate)
-	} else if strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am") {
-		return downloadInstagram(url, outputTemplate)
-	} else if strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it") {
+	case strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am"):
+		return downloadInstagram(url, outputTemplate, start)
+	case strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it"):
 		return downloadPinterest(url, outputTemplate, start)
+	default:
+		return nil, "", fmt.Errorf("unsupported URL")
 	}
-
-	return nil, "", fmt.Errorf("unsupported link")
 }
 
 // ===================== YOUTUBE =====================
@@ -181,22 +178,24 @@ func downloadYouTube(url, output string) ([]string, string, error) {
 		"--restrict-filenames",
 		"--ffmpeg-location", ffmpegPath,
 		"--cookies", cookiesFile,
+		"--no-cookie-save", // avoid writing cookies back in Docker
 		"-f", "bestvideo[height<=720]+bestaudio/best",
 		"--merge-output-format", "mp4",
 		"-o", output,
 		url,
 	}
 	out, err := runCommandCapture(ytDlpPath, args...)
-	log.Printf("🧾 yt-dlp output:\n%s", out)
+	log.Printf("🧾 YouTube yt-dlp output:\n%s", out)
 	if err != nil {
 		return nil, "", err
 	}
+
 	files := filesCreatedAfter(downloadsDir, time.Now().Add(-time.Minute))
 	return files, "video", nil
 }
 
 // ===================== INSTAGRAM =====================
-func downloadInstagram(url, output string) ([]string, string, error) {
+func downloadInstagram(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{
 		"--no-warnings",
 		"--ffmpeg-location", ffmpegPath,
@@ -204,20 +203,29 @@ func downloadInstagram(url, output string) ([]string, string, error) {
 		url,
 	}
 	if fileExists(cookiesFile) {
-		args = append(args, "--cookies", cookiesFile)
+		args = append(args, "--cookies", cookiesFile, "--no-cookie-save")
 	}
 	out, err := runCommandCapture(ytDlpPath, args...)
-	log.Printf("🧾 yt-dlp output:\n%s", out)
+	log.Printf("🧾 Instagram yt-dlp output:\n%s", out)
+
+	files := filesCreatedAfter(downloadsDir, start)
+	if err == nil && len(files) > 0 {
+		return files, "video", nil
+	}
+
+	// fallback to gallery-dl for images and carousels
+	out, err = runCommandCapture("gallery-dl", "-d", downloadsDir, url)
+	log.Printf("🖼️ Instagram gallery-dl output:\n%s", out)
 	if err != nil {
 		return nil, "", err
 	}
-	files := filesCreatedAfter(downloadsDir, time.Now().Add(-time.Minute))
-	return files, "video", nil
+	files = filesCreatedAfter(downloadsDir, start)
+	return files, "image", nil
 }
 
 // ===================== PINTEREST =====================
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
-	// First try yt-dlp (some Pinterest links are videos)
+	// try yt-dlp for videos
 	args := []string{
 		"--no-warnings",
 		"--ffmpeg-location", ffmpegPath,
@@ -226,18 +234,18 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 	}
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 Pinterest yt-dlp output:\n%s", out)
-	if err == nil && len(filesCreatedAfter(downloadsDir, start)) > 0 {
-		files := filesCreatedAfter(downloadsDir, start)
+	files := filesCreatedAfter(downloadsDir, start)
+	if err == nil && len(files) > 0 {
 		return files, "video", nil
 	}
 
-	// Otherwise fallback to gallery-dl for images
+	// fallback to gallery-dl for images
 	out, err = runCommandCapture("gallery-dl", "-d", downloadsDir, url)
 	log.Printf("🖼️ Pinterest gallery-dl output:\n%s", out)
 	if err != nil {
 		return nil, "", err
 	}
-	files := filesCreatedAfter(downloadsDir, start)
+	files = filesCreatedAfter(downloadsDir, start)
 	return files, "image", nil
 }
 

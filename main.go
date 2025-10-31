@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	ffmpegPath = "/usr/bin/ffmpeg" // full path to ffmpeg binary
+	ffmpegPath = "/usr/bin/ffmpeg" // path to ffmpeg binary
 	ytDlpPath  = "yt-dlp"
 )
 
@@ -90,6 +90,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	chatID := msg.Chat.ID
 
+	// Only respond to /start or messages containing supported links
 	if text == "/start" {
 		startMsg := fmt.Sprintf(
 			"👋 Salom %s!\n\n🎥 Menga YouTube, Instagram yoki Pinterest link yuboring — men sizga videoni yoki rasmni yuboraman.",
@@ -101,7 +102,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	links := extractSupportedLinks(text)
 	if len(links) == 0 {
-		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Iltimos, YouTube, Instagram yoki Pinterest link yuboring."))
+		// Ignore messages without links
 		return
 	}
 
@@ -115,7 +116,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := downloadMedia(url)
 			<-sem
 
-			// remove loading message
+			// Remove loading message
 			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 				ChatID:    chatID,
 				MessageID: loadingMsgID,
@@ -129,8 +130,24 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 				return
 			}
 
-			for _, file := range files {
-				sendMedia(bot, chatID, file, replyToID, mediaType)
+			// Send media
+			if mediaType == "image" && len(files) > 1 {
+				// Send multiple images as MediaGroup
+				var mediaGroup []interface{}
+				for _, file := range files {
+					photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(file))
+					mediaGroup = append(mediaGroup, photo)
+				}
+				if _, err := bot.Send(tgbotapi.MediaGroupConfig{
+					ChatID: chatID,
+					Media:  mediaGroup,
+				}); err != nil {
+					log.Printf("❌ Failed to send Instagram gallery: %v", err)
+				}
+			} else {
+				for _, file := range files {
+					sendMedia(bot, chatID, file, replyToID, mediaType)
+				}
 			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
 	}
@@ -222,7 +239,7 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 	}
 
 	files := filesCreatedAfter(downloadsDir, start)
-	return files, "video", nil
+	return files, "image", nil // Instagram can be video or image, using "image" for gallery handling
 }
 
 // ===================== PINTEREST =====================
@@ -305,7 +322,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int,
 		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 		photo.ReplyToMessageID = replyTo
 		if _, err := bot.Send(photo); err != nil {
-			log.Printf("❌ Failed to send image: %v", err)
+			log.Printf("❌ Failed to send photo: %v", err)
 		}
 	}
 }

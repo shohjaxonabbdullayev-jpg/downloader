@@ -18,25 +18,29 @@ import (
 )
 
 const (
-	ffmpegPath = "/usr/bin" // ffmpeg path for merging
+	ffmpegPath = "/usr/bin" // path to ffmpeg
 	ytDlpPath  = "yt-dlp"
 )
 
 var (
 	downloadsDir = "downloads"
 	cookiesFile  = "cookies.txt"
-	sem          = make(chan struct{}, 3) // limit concurrent downloads
+	sem          = make(chan struct{}, 3) // concurrent downloads limit
 )
 
+// ===================== HEALTH CHECK SERVER =====================
 func startHealthCheckServer(port string) {
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "✅ Bot is healthy and running!")
+		fmt.Fprintf(w, "✅ Bot is running and healthy!")
 	})
 	log.Printf("💚 Health check server running on port %s", port)
-	http.ListenAndServe(":"+port, nil)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Fatalf("❌ Health check server failed: %v", err)
+	}
 }
 
+// ===================== MAIN =====================
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("⚠️ .env file not found, using system environment")
@@ -54,13 +58,16 @@ func main() {
 
 	go startHealthCheckServer(port)
 
-	os.MkdirAll(downloadsDir, 0755)
+	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
+		log.Fatalf("❌ Failed to create downloads folder: %v", err)
+	}
 
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
-		log.Fatalf("❌ Bot init failed: %v", err)
+		log.Fatalf("❌ Bot initialization failed: %v", err)
 	}
-	log.Printf("🤖 Logged in as @%s", bot.Self.UserName)
+
+	log.Printf("🤖 Bot authorized as @%s", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -74,22 +81,24 @@ func main() {
 	}
 }
 
+// ===================== MESSAGE HANDLER =====================
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return
 	}
+
 	chatID := msg.Chat.ID
 
 	if text == "/start" {
-		startMsg := fmt.Sprintf("👋 Salom %s!\n\n🎥 Menga YouTube, Instagram, TikTok yoki Pinterest link yuboring — men sizga videoni yoki rasmni yuboraman.", msg.From.UserName)
+		startMsg := fmt.Sprintf("👋 Salom %s!\n\n🎥 Menga YouTube, Instagram yoki Pinterest link yuboring — men sizga videoni yoki rasmni yuboraman.", msg.From.UserName)
 		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
 	}
 
 	links := extractSupportedLinks(text)
 	if len(links) == 0 {
-		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Faqat YouTube, Instagram, TikTok yoki Pinterest link yuboring."))
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Iltimos, YouTube, Instagram yoki Pinterest link yuboring."))
 		return
 	}
 
@@ -103,6 +112,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := downloadMedia(url)
 			<-sem
 
+			// remove loading message
 			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 				ChatID:    chatID,
 				MessageID: loadingMsgID,
@@ -110,19 +120,20 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 			if err != nil {
 				log.Printf("❌ Download error for %s: %v", url, err)
-				errMsg := tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Linkni tekshiring.")
-				errMsg.ReplyToMessageID = replyToID
-				bot.Send(errMsg)
+				errorMsg := tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Linkni tekshiring.")
+				errorMsg.ReplyToMessageID = replyToID
+				bot.Send(errorMsg)
 				return
 			}
 
-			for _, f := range files {
-				sendMedia(bot, chatID, f, replyToID, mediaType)
+			for _, file := range files {
+				sendMedia(bot, chatID, file, replyToID, mediaType)
 			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
 	}
 }
 
+// ===================== LINK EXTRACTION =====================
 func extractSupportedLinks(text string) []string {
 	regex := `(https?://[^\s]+)`
 	matches := regexp.MustCompile(regex).FindAllString(text, -1)
@@ -141,119 +152,135 @@ func isSupportedLink(text string) bool {
 		strings.Contains(text, "youtu.be") ||
 		strings.Contains(text, "instagram.com") ||
 		strings.Contains(text, "instagr.am") ||
-		strings.Contains(text, "tiktok.com") ||
-		strings.Contains(text, "pin.it") ||
-		strings.Contains(text, "pinterest.com")
+		strings.Contains(text, "pinterest.com") ||
+		strings.Contains(text, "pin.it")
 }
 
+// ===================== DOWNLOAD FUNCTION =====================
 func downloadMedia(url string) ([]string, string, error) {
 	start := time.Now()
-	output := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().UnixNano()))
+	uniqueID := time.Now().UnixNano()
+	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
 
-	switch {
-	case strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be"):
-		return downloadYouTube(url, output)
-	case strings.Contains(url, "tiktok.com"):
-		return downloadTikTok(url, output)
-	case strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am"):
-		return downloadInstagram(url, output, start)
-	case strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it"):
-		return downloadPinterest(url, output, start)
-	default:
-		return nil, "", fmt.Errorf("unsupported URL")
+	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") {
+		return downloadYouTube(url, outputTemplate)
+	} else if strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am") {
+		return downloadInstagram(url, outputTemplate)
+	} else if strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it") {
+		return downloadPinterest(url, outputTemplate, start)
 	}
+
+	return nil, "", fmt.Errorf("unsupported link")
 }
 
-// --------------------- PLATFORM HANDLERS ---------------------
-
+// ===================== YOUTUBE =====================
 func downloadYouTube(url, output string) ([]string, string, error) {
-	args := []string{"--no-playlist", "--no-warnings", "--ffmpeg-location", ffmpegPath, "--cookies", cookiesFile, "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", output, url}
+	args := []string{
+		"--no-playlist",
+		"--no-warnings",
+		"--restrict-filenames",
+		"--ffmpeg-location", ffmpegPath,
+		"--cookies", cookiesFile,
+		"-f", "bestvideo[height<=720]+bestaudio/best",
+		"--merge-output-format", "mp4",
+		"-o", output,
+		url,
+	}
 	out, err := runCommandCapture(ytDlpPath, args...)
-	log.Println(out)
+	log.Printf("🧾 yt-dlp output:\n%s", out)
 	if err != nil {
 		return nil, "", err
 	}
-	return filesCreatedAfter(downloadsDir, time.Now().Add(-time.Minute)), "video", nil
+	files := filesCreatedAfter(downloadsDir, time.Now().Add(-time.Minute))
+	return files, "video", nil
 }
 
-func downloadTikTok(url, output string) ([]string, string, error) {
-	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
-	out, err := runCommandCapture(ytDlpPath, args...)
-	log.Println(out)
-	if err != nil {
-		return nil, "", err
+// ===================== INSTAGRAM =====================
+func downloadInstagram(url, output string) ([]string, string, error) {
+	args := []string{
+		"--no-warnings",
+		"--ffmpeg-location", ffmpegPath,
+		"-o", output,
+		url,
 	}
-	return filesCreatedAfter(downloadsDir, time.Now().Add(-time.Minute)), "video", nil
-}
-
-func downloadInstagram(url, output string, start time.Time) ([]string, string, error) {
-	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
 	if fileExists(cookiesFile) {
 		args = append(args, "--cookies", cookiesFile)
 	}
 	out, err := runCommandCapture(ytDlpPath, args...)
-	log.Printf("🧾 Instagram yt-dlp output:\n%s", out)
-
-	files := filesCreatedAfter(downloadsDir, start)
-	if err == nil && len(files) > 0 {
-		return files, "video", nil
-	}
-
-	// fallback for images and carousels
-	out, err = runCommandCapture("gallery-dl", "-d", downloadsDir, url)
-	log.Printf("🖼️ Instagram gallery-dl output:\n%s", out)
+	log.Printf("🧾 yt-dlp output:\n%s", out)
 	if err != nil {
 		return nil, "", err
 	}
-	return filesCreatedAfter(downloadsDir, start), "image", nil
+	files := filesCreatedAfter(downloadsDir, time.Now().Add(-time.Minute))
+	return files, "video", nil
 }
 
+// ===================== PINTEREST =====================
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
-	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
+	// First try yt-dlp (some Pinterest links are videos)
+	args := []string{
+		"--no-warnings",
+		"--ffmpeg-location", ffmpegPath,
+		"-o", output,
+		url,
+	}
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 Pinterest yt-dlp output:\n%s", out)
 	if err == nil && len(filesCreatedAfter(downloadsDir, start)) > 0 {
-		return filesCreatedAfter(downloadsDir, start), "video", nil
+		files := filesCreatedAfter(downloadsDir, start)
+		return files, "video", nil
 	}
 
+	// Otherwise fallback to gallery-dl for images
 	out, err = runCommandCapture("gallery-dl", "-d", downloadsDir, url)
 	log.Printf("🖼️ Pinterest gallery-dl output:\n%s", out)
 	if err != nil {
 		return nil, "", err
 	}
-	return filesCreatedAfter(downloadsDir, start), "image", nil
+	files := filesCreatedAfter(downloadsDir, start)
+	return files, "image", nil
 }
 
-// --------------------- HELPERS ---------------------
-
+// ===================== HELPERS =====================
 func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func runCommandCapture(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
 	err := cmd.Run()
-	return out.String(), err
+	return combined.String(), err
 }
 
 func filesCreatedAfter(dir string, t time.Time) []string {
-	files, _ := os.ReadDir(dir)
-	var result []string
-	for _, f := range files {
-		if info, err := os.Stat(filepath.Join(dir, f.Name())); err == nil && info.ModTime().After(t) {
-			result = append(result, filepath.Join(dir, f.Name()))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var res []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fullPath := filepath.Join(dir, e.Name())
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(t) {
+			res = append(res, fullPath)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool {
-		fi, _ := os.Stat(result[i])
-		fj, _ := os.Stat(result[j])
+	sort.Slice(res, func(i, j int) bool {
+		fi, _ := os.Stat(res[i])
+		fj, _ := os.Stat(res[j])
 		return fi.ModTime().Before(fj.ModTime())
 	})
-	return result
+	return res
 }
 
 func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) {

@@ -102,7 +102,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	links := extractSupportedLinks(text)
 	if len(links) == 0 {
-		// Ignore messages without links
+		// Ignore messages without supported links
 		return
 	}
 
@@ -239,7 +239,21 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 	}
 
 	files := filesCreatedAfter(downloadsDir, start)
-	return files, "image", nil // Instagram can be video or image, using "image" for gallery handling
+	if len(files) == 0 {
+		return nil, "", fmt.Errorf("no files downloaded from Instagram")
+	}
+
+	// Determine media type by extension
+	mediaType := "image"
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext == ".mp4" || ext == ".mov" {
+			mediaType = "video"
+			break
+		}
+	}
+
+	return files, mediaType, nil
 }
 
 // ===================== PINTEREST =====================

@@ -25,7 +25,7 @@ const (
 var (
 	downloadsDir = "downloads"
 	cookiesFile  = "cookies.txt"
-	sem          = make(chan struct{}, 3) // limit concurrent downloads
+	sem          = make(chan struct{}, 3) // concurrent downloads limit
 )
 
 // ===================== HEALTH CHECK SERVER =====================
@@ -74,10 +74,11 @@ func main() {
 	updates := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.Message == nil {
-			continue
+		if update.Message != nil {
+			go handleMessage(bot, update.Message)
+		} else if update.CallbackQuery != nil {
+			handleCallback(bot, update.CallbackQuery)
 		}
-		go handleMessage(bot, update.Message)
 	}
 }
 
@@ -130,26 +131,29 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 				return
 			}
 
-			// Send media
-			if mediaType == "image" && len(files) > 1 {
-				// Send multiple images as MediaGroup
-				var mediaGroup []interface{}
-				for _, file := range files {
-					photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(file))
-					mediaGroup = append(mediaGroup, photo)
-				}
-				if _, err := bot.Send(tgbotapi.MediaGroupConfig{
-					ChatID: chatID,
-					Media:  mediaGroup,
-				}); err != nil {
-					log.Printf("❌ Failed to send Instagram gallery: %v", err)
-				}
-			} else {
-				for _, file := range files {
-					sendMedia(bot, chatID, file, replyToID, mediaType)
-				}
+			for _, file := range files {
+				sendMediaWithButtons(bot, chatID, file, replyToID, mediaType)
 			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
+	}
+}
+
+// ===================== CALLBACK HANDLER =====================
+func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery) {
+	var text string
+
+	switch query.Data {
+	case "forward":
+		text = "Bu media do‘stlar bilan ulashish uchun tayyor!"
+	case "add_group":
+		text = "Bu media guruhga qo‘shish uchun tayyor!"
+	default:
+		text = "Tugma bosildi!"
+	}
+
+	// Answer callback and ignore the returned APIResponse
+	if _, err := bot.Request(tgbotapi.NewCallback(query.ID, text)); err != nil {
+		log.Printf("❌ Callback query error: %v", err)
 	}
 }
 
@@ -243,7 +247,6 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 		return nil, "", fmt.Errorf("no files downloaded from Instagram")
 	}
 
-	// Determine media type by extension
 	mediaType := "image"
 	for _, f := range files {
 		ext := strings.ToLower(filepath.Ext(f))
@@ -258,27 +261,30 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 
 // ===================== PINTEREST =====================
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
-	// Try yt-dlp for videos
-	args := []string{
-		"--no-warnings",
-		"--ffmpeg-location", ffmpegPath,
-		"-o", output,
-		url,
+	// Try yt-dlp for videos first
+	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
+	if fileExists(cookiesFile) {
+		args = append(args, "--cookies", cookiesFile)
 	}
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 Pinterest yt-dlp output:\n%s", out)
-	if err == nil && len(filesCreatedAfter(downloadsDir, start)) > 0 {
-		files := filesCreatedAfter(downloadsDir, start)
+	files := filesCreatedAfter(downloadsDir, start)
+	if err == nil && len(files) > 0 {
 		return files, "video", nil
 	}
 
 	// Fallback to gallery-dl for images
-	out, err = runCommandCapture("gallery-dl", "-d", downloadsDir, url)
-	log.Printf("🖼️ Pinterest gallery-dl output:\n%s", out)
-	if err != nil {
-		return nil, "", err
+	argsGD := []string{"-d", downloadsDir, url}
+	if fileExists(cookiesFile) {
+		argsGD = append([]string{"--cookies", cookiesFile}, argsGD...)
 	}
-	files := filesCreatedAfter(downloadsDir, start)
+	out, err = runCommandCapture("gallery-dl", argsGD...)
+	log.Printf("🖼️ Pinterest gallery-dl output:\n%s", out)
+	files = filesCreatedAfter(downloadsDir, start)
+	if err != nil || len(files) == 0 {
+		return nil, "", fmt.Errorf("Pinterest download failed: %v", err)
+	}
+
 	return files, "image", nil
 }
 
@@ -324,19 +330,24 @@ func filesCreatedAfter(dir string, t time.Time) []string {
 	return res
 }
 
-func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) {
+// ===================== SEND MEDIA WITH BUTTONS =====================
+func sendMediaWithButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) {
+	// Create inline buttons
+	btnForward := tgbotapi.NewInlineKeyboardButtonData("Do'stlar bilan ulashish", "forward")
+	btnGroup := tgbotapi.NewInlineKeyboardButtonData("Guruhga qo'shish", "add_group")
+	row := tgbotapi.NewInlineKeyboardRow(btnForward, btnGroup)
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(row)
+
 	switch mediaType {
 	case "video":
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 		video.ReplyToMessageID = replyTo
-		if _, err := bot.Send(video); err != nil {
-			log.Printf("❌ Failed to send video: %v", err)
-		}
+		video.ReplyMarkup = keyboard
+		bot.Send(video)
 	case "image":
 		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 		photo.ReplyToMessageID = replyTo
-		if _, err := bot.Send(photo); err != nil {
-			log.Printf("❌ Failed to send photo: %v", err)
-		}
+		photo.ReplyMarkup = keyboard
+		bot.Send(photo)
 	}
 }

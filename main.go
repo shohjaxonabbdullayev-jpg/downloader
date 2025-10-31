@@ -18,18 +18,17 @@ import (
 )
 
 const (
-	ffmpegPath         = "/usr/bin"
-	ytDlpPath          = "yt-dlp"
-	instaCookiesFile   = "cookies.txt"
-	youtubeCookiesFile = "youtube_cookies.txt"
+	ffmpegPath  = "/usr/bin"
+	ytDlpPath   = "yt-dlp"
+	cookiesFile = "cookies.txt" // single file for all cookies
 )
 
 var (
 	downloadsDir = "downloads"
-	sem          = make(chan struct{}, 3)
+	sem          = make(chan struct{}, 3) // limit concurrent downloads
 )
 
-// ===================== HEALTH CHECK =====================
+// ===================== HEALTH CHECK SERVER =====================
 func startHealthCheckServer(port string) {
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -104,6 +103,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := downloadMedia(url)
 			<-sem
 
+			// delete loading message
 			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 				ChatID:    chatID,
 				MessageID: loadingMsgID,
@@ -147,48 +147,28 @@ func isSupportedLink(text string) bool {
 		strings.Contains(text, "pin.it")
 }
 
-// ===================== DOWNLOAD FUNCTION =====================
+// ===================== DOWNLOAD MEDIA =====================
 func downloadMedia(url string) ([]string, string, error) {
 	start := time.Now()
 	uniqueID := time.Now().UnixNano()
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
 
-	// YouTube (regular videos + shorts)
 	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") {
-		files, mediaType, err := downloadYouTube(url, outputTemplate)
-		if err != nil {
-			return nil, "", err
-		}
-		return files, mediaType, nil
+		return downloadYouTube(url, outputTemplate)
+	} else if strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am") {
+		return downloadInstagram(url, outputTemplate)
+	} else if strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it") {
+		return downloadPinterest(url, outputTemplate, start)
 	}
 
-	// Instagram (posts, reels, stories)
-	if strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am") {
-		files, mediaType, err := downloadInstagram(url, outputTemplate)
-		if err != nil {
-			return nil, "", err
-		}
-		return files, mediaType, nil
-	}
-
-	// Pinterest (video pins via yt-dlp, image pins via gallery-dl)
-	if strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it") {
-		files, mediaType, err := downloadPinterest(url, outputTemplate, start)
-		if err != nil {
-			return nil, "", err
-		}
-		return files, mediaType, nil
-	}
-
-	// Unsupported link
 	return nil, "", fmt.Errorf("unsupported link: %s", url)
 }
 
 // ===================== YOUTUBE =====================
 func downloadYouTube(url, output string) ([]string, string, error) {
 	args := []string{"--no-playlist", "--no-warnings", "--restrict-filenames", "--ffmpeg-location", ffmpegPath, "-o", output}
-	if fileExists(youtubeCookiesFile) {
-		args = append(args, "--cookies", youtubeCookiesFile)
+	if fileExists(cookiesFile) {
+		args = append(args, "--cookies", cookiesFile)
 	}
 	args = append(args, "-f", "bestvideo[height<=720]+bestaudio/best", "--recode-video", "mp4", "--merge-output-format", "mp4", url)
 
@@ -198,18 +178,14 @@ func downloadYouTube(url, output string) ([]string, string, error) {
 		return nil, "", err
 	}
 
-	return filesCreatedAfter(downloadsDir, time.Now().Add(-time.Second)), "video", nil
+	return filesCreatedAfter(downloadsDir, time.Now().Add(-2*time.Second)), "video", nil
 }
 
 // ===================== INSTAGRAM =====================
 func downloadInstagram(url, output string) ([]string, string, error) {
-	if strings.Contains(url, "/stories/") && !fileExists(instaCookiesFile) {
-		return nil, "", fmt.Errorf("cookies.txt required for story download")
-	}
-
 	args := []string{"--no-playlist", "--no-warnings", "--restrict-filenames", "--ffmpeg-location", ffmpegPath, "-o", output}
-	if fileExists(instaCookiesFile) {
-		args = append(args, "--cookies", instaCookiesFile)
+	if fileExists(cookiesFile) {
+		args = append(args, "--cookies", cookiesFile)
 	}
 	args = append(args, "--recode-video", "mp4", url)
 
@@ -219,13 +195,17 @@ func downloadInstagram(url, output string) ([]string, string, error) {
 		return nil, "", err
 	}
 
-	return filesCreatedAfter(downloadsDir, time.Now().Add(-time.Second)), "video", nil
+	return filesCreatedAfter(downloadsDir, time.Now().Add(-2*time.Second)), "video", nil
 }
 
 // ===================== PINTEREST =====================
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
 	// Try yt-dlp first for video pins
 	args := []string{"--no-playlist", "--no-warnings", "--restrict-filenames", "--ffmpeg-location", ffmpegPath, "-o", output, url}
+	if fileExists(cookiesFile) {
+		args = append(args, "--cookies", cookiesFile)
+	}
+
 	out, err := runCommandCapture(ytDlpPath, args...)
 	if err == nil && len(filesCreatedAfter(downloadsDir, start)) > 0 {
 		log.Printf("🧾 yt-dlp output (Pinterest Video):\n%s", out)
@@ -260,12 +240,12 @@ func filesCreatedAfter(dir string, t time.Time) []string {
 	var res []string
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
+		fullPath := filepath.Join(dir, e.Name())
 		if e.IsDir() {
-			subfiles := filesCreatedAfter(filepath.Join(dir, e.Name()), t)
+			subfiles := filesCreatedAfter(fullPath, t)
 			res = append(res, subfiles...)
 			continue
 		}
-		fullPath := filepath.Join(dir, e.Name())
 		info, err := os.Stat(fullPath)
 		if err != nil {
 			continue

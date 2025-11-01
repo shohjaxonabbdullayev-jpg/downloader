@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +26,7 @@ const (
 var (
 	downloadsDir = "downloads"
 	cookiesFile  = "cookies.txt"
-	sem          = make(chan struct{}, 3)
+	sem          = make(chan struct{}, 3) // concurrency limit
 )
 
 func main() {
@@ -69,7 +70,7 @@ func main() {
 	}
 }
 
-// ===================== HEALTH CHECK =====================
+// HEALTH CHECK
 func startHealthCheckServer(port string) {
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -81,7 +82,7 @@ func startHealthCheckServer(port string) {
 	}
 }
 
-// ===================== MESSAGE HANDLER =====================
+// MESSAGE HANDLER
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
@@ -109,9 +110,9 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		loadingMsg.ReplyToMessageID = msg.MessageID
 		sent, _ := bot.Send(loadingMsg)
 
-		go func(url string, chatID int64, replyToID, loadingMsgID int) {
+		go func(urlStr string, chatID int64, replyToID, loadingMsgID int) {
 			sem <- struct{}{}
-			files, mediaType, err := downloadMedia(url)
+			files, mediaType, err := downloadMedia(urlStr)
 			<-sem
 
 			// Delete loading message
@@ -121,7 +122,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			})
 
 			if err != nil {
-				log.Printf("❌ Download error for %s: %v", url, err)
+				log.Printf("❌ Download error for %s: %v", urlStr, err)
 				errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Yuklab bo‘lmadi: %v", err))
 				errorMsg.ReplyToMessageID = replyToID
 				bot.Send(errorMsg)
@@ -129,37 +130,22 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			}
 
 			for _, file := range files {
-				sendMediaWithButtons(bot, chatID, file, replyToID, mediaType)
+				if err := sendMediaAndAttachShareButtons(bot, chatID, file, replyToID, mediaType); err != nil {
+					log.Printf("❌ Error sending media: %v", err)
+				}
 			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
 	}
 }
 
-// ===================== CALLBACK HANDLER =====================
+// CALLBACK HANDLER
 func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery) {
 	switch query.Data {
-	case "forward":
-		// Send message with forward/share instruction
-		msg := tgbotapi.NewMessage(query.Message.Chat.ID, "📨 Ushbu videoni do‘stlaringizga yuboring 👇")
-		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonURL(
-					"📩 Do‘stlarga yuborish",
-					fmt.Sprintf("https://t.me/%s", bot.Self.UserName),
-				),
-			),
-		)
-
-		if _, err := bot.Send(msg); err != nil {
-			log.Printf("Error sending forward message: %v", err)
-		}
-
-		// ✅ FIX: AnswerCallbackQuery must receive *tgbotapi.CallbackConfig
-		callback := tgbotapi.NewCallback(query.ID, "✅ Ulashish uchun tayyor!")
+	case "forward": // (rarely used now, kept as fallback)
+		callback := tgbotapi.NewCallback(query.ID, "📤 Share button — iltimos tugmani ishlating.")
 		if _, err := bot.Request(callback); err != nil {
 			log.Printf("Error answering callback: %v", err)
 		}
-
 	case "add_group":
 		addGroupMsg := tgbotapi.NewMessage(query.Message.Chat.ID, "👥 Meni guruhingizga qo‘shing 👇")
 		addGroupMsg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
@@ -170,16 +156,13 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery) {
 				),
 			),
 		)
-
 		if _, err := bot.Send(addGroupMsg); err != nil {
 			log.Printf("Error sending group add message: %v", err)
 		}
-
 		callback := tgbotapi.NewCallback(query.ID, "✅ Guruhga qo‘shish uchun tayyor!")
 		if _, err := bot.Request(callback); err != nil {
 			log.Printf("Error answering callback: %v", err)
 		}
-
 	default:
 		callback := tgbotapi.NewCallback(query.ID, "❓ Noma’lum amal")
 		if _, err := bot.Request(callback); err != nil {
@@ -188,7 +171,7 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery) {
 	}
 }
 
-// ===================== LINK EXTRACTION =====================
+// LINK EXTRACTION
 func extractSupportedLinks(text string) []string {
 	regex := `(https?://[^\s]+)`
 	matches := regexp.MustCompile(regex).FindAllString(text, -1)
@@ -211,7 +194,7 @@ func isSupportedLink(text string) bool {
 		strings.Contains(text, "pin.it")
 }
 
-// ===================== DOWNLOAD MEDIA =====================
+// DOWNLOAD MEDIA
 func downloadMedia(url string) ([]string, string, error) {
 	start := time.Now()
 	uniqueID := time.Now().UnixNano()
@@ -229,7 +212,7 @@ func downloadMedia(url string) ([]string, string, error) {
 	return nil, "", fmt.Errorf("unsupported link")
 }
 
-// ===================== YOUTUBE =====================
+// YOUTUBE
 func downloadYouTube(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{
 		"--no-playlist",
@@ -251,7 +234,7 @@ func downloadYouTube(url, output string, start time.Time) ([]string, string, err
 	return files, "video", err
 }
 
-// ===================== INSTAGRAM =====================
+// INSTAGRAM
 func downloadInstagram(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{
 		"--no-warnings",
@@ -286,7 +269,7 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 	return files, mediaType, nil
 }
 
-// ===================== PINTEREST =====================
+// PINTEREST
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
 	if fileExists(cookiesFile) {
@@ -314,7 +297,7 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 	return files, "image", nil
 }
 
-// ===================== HELPERS =====================
+// HELPERS
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
@@ -352,9 +335,34 @@ func filesCreatedAfterRecursive(dir string, t time.Time) []string {
 	return res
 }
 
-// ===================== SEND MEDIA WITH BUTTONS =====================
-func sendMediaWithButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) {
-	btnShare := tgbotapi.NewInlineKeyboardButtonData("📤 Do'stlar bilan ulashish", "forward")
+// SEND MEDIA, THEN ATTACH SHARE / ADD-TO-GROUP BUTTONS
+func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) error {
+	var sentMsg tgbotapi.Message
+	var err error
+
+	// 1️⃣ Send media first (to get message ID)
+	switch mediaType {
+	case "video":
+		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+		video.ReplyToMessageID = replyTo
+		sentMsg, err = bot.Send(video)
+	case "image":
+		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
+		photo.ReplyToMessageID = replyTo
+		sentMsg, err = bot.Send(photo)
+	default:
+		return fmt.Errorf("unknown media type: %s", mediaType)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to send media: %w", err)
+	}
+
+	// 2️⃣ Generate share link for that message
+	msgLink := fmt.Sprintf("https://t.me/%s/%d", bot.Self.UserName, sentMsg.MessageID)
+	shareURL := fmt.Sprintf("https://t.me/share/url?url=%s", url.QueryEscape(msgLink))
+
+	// 3️⃣ Create inline buttons
+	btnShare := tgbotapi.NewInlineKeyboardButtonURL("📤 Do'stlar bilan ulashish", shareURL)
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL(
 		"👥 Guruhga qo'shish",
 		fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
@@ -365,16 +373,11 @@ func sendMediaWithButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string, r
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
 
-	switch mediaType {
-	case "video":
-		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
-		video.ReplyToMessageID = replyTo
-		video.ReplyMarkup = keyboard
-		bot.Send(video)
-	case "image":
-		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
-		photo.ReplyToMessageID = replyTo
-		photo.ReplyMarkup = keyboard
-		bot.Send(photo)
+	// 4️⃣ Attach the keyboard using NewEditMessageReplyMarkup
+	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, sentMsg.MessageID, keyboard)
+	if _, err := bot.Send(edit); err != nil {
+		log.Printf("⚠️ Warning: failed to attach keyboard: %v", err)
 	}
+
+	return nil
 }

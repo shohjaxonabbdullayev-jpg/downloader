@@ -25,7 +25,7 @@ const (
 var (
 	downloadsDir = "downloads"
 	cookiesFile  = "cookies.txt"
-	sem          = make(chan struct{}, 3)
+	sem          = make(chan struct{}, 3) // Limit 3 concurrent downloads
 )
 
 func main() {
@@ -63,8 +63,6 @@ func main() {
 	for update := range updates {
 		if update.Message != nil {
 			go handleMessage(bot, update.Message)
-		} else if update.CallbackQuery != nil {
-			handleCallback(bot, update.CallbackQuery)
 		}
 	}
 }
@@ -132,21 +130,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 				sendMediaWithButtons(bot, chatID, file, replyToID, mediaType)
 			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
-	}
-}
-
-// ===================== CALLBACK HANDLER =====================
-func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery) {
-	switch query.Data {
-	case "forward":
-		text := "📤 Iltimos, xabarni do'stingizga yuboring yoki forward qiling."
-		if _, err := bot.Request(tgbotapi.NewCallback(query.ID, text)); err != nil {
-			log.Printf("❌ Callback error: %v", err)
-		}
-	default:
-		if _, err := bot.Request(tgbotapi.NewCallback(query.ID, "Tugma bosildi!")); err != nil {
-			log.Printf("❌ Callback error: %v", err)
-		}
 	}
 }
 
@@ -317,8 +300,14 @@ func filesCreatedAfterRecursive(dir string, t time.Time) []string {
 
 // ===================== SEND MEDIA WITH BUTTONS =====================
 func sendMediaWithButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) {
-	btnForward := tgbotapi.NewInlineKeyboardButtonData("Do'stlar bilan ulashish", "forward")
-	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("Guruhga qo'shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
+	btnForward := tgbotapi.NewInlineKeyboardButtonURL(
+		"Do'stlar bilan ulashish",
+		fmt.Sprintf("https://t.me/%s", bot.Self.UserName),
+	)
+	btnGroup := tgbotapi.NewInlineKeyboardButtonURL(
+		"Guruhga qo'shish",
+		fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
+	)
 	row := tgbotapi.NewInlineKeyboardRow(btnForward, btnGroup)
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(row)
 

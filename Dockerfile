@@ -9,22 +9,20 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# Download Go modules
+# Copy and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy app source
+# Copy source code and build
 COPY . .
-
-# Build Go binary
 RUN go build -o downloader-bot .
 
 # ==============================
-# 🚀 STAGE 2 — Final lightweight image
+# 🚀 STAGE 2 — Final runtime image
 # ==============================
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
+# Install runtime dependencies (including Chromium for chromedp)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -33,23 +31,52 @@ RUN apt-get update && \
         ca-certificates \
         curl \
         wget \
-        git && \
+        git \
+        fonts-liberation \
+        libasound2 \
+        libatk1.0-0 \
+        libc6 \
+        libcairo2 \
+        libcups2 \
+        libdbus-1-3 \
+        libexpat1 \
+        libfontconfig1 \
+        libgbm1 \
+        libglib2.0-0 \
+        libgtk-3-0 \
+        libnspr4 \
+        libnss3 \
+        libpango-1.0-0 \
+        libx11-6 \
+        libx11-xcb1 \
+        libxcb1 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxi6 \
+        libxrandr2 \
+        libxrender1 \
+        libxss1 \
+        libxtst6 \
+        chromium && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Install Python packages yt-dlp and gallery-dl in isolated venv
+# ✅ Set CHROME_PATH for chromedp (important)
+ENV CHROME_PATH=/usr/bin/chromium
+
+# ✅ Install yt-dlp & gallery-dl (in isolated venv)
 RUN python3 -m venv /opt/yt && \
     /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
     ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
     ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
 
-# Create app directory
+# App setup
 WORKDIR /app
-
-# Copy Go binary
 COPY --from=builder /app/downloader-bot .
 
-# Optional cookies and downloads folder
-COPY cookies.txt ./cookies.txt
+# Create downloads folder (used by the bot)
 RUN mkdir -p downloads
 
 # Environment variables

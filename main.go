@@ -26,7 +26,7 @@ const (
 var (
 	downloadsDir = "downloads"
 	cookiesFile  = "cookies.txt"
-	sem          = make(chan struct{}, 3) // concurrency limit
+	sem          = make(chan struct{}, 3)
 )
 
 func main() {
@@ -64,13 +64,11 @@ func main() {
 	for update := range updates {
 		if update.Message != nil {
 			go handleMessage(bot, update.Message)
-		} else if update.CallbackQuery != nil {
-			handleCallback(bot, update.CallbackQuery)
 		}
 	}
 }
 
-// HEALTH CHECK
+// ===================== HEALTH CHECK =====================
 func startHealthCheckServer(port string) {
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -82,7 +80,7 @@ func startHealthCheckServer(port string) {
 	}
 }
 
-// MESSAGE HANDLER
+// ===================== MESSAGE HANDLER =====================
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
@@ -94,7 +92,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	if text == "/start" {
 		startMsg := fmt.Sprintf(
 			"👋 Salom %s!\n\n🎥 Menga YouTube, Instagram yoki Pinterest link yuboring — men sizga videoni yoki rasmni yuboraman.",
-			msg.From.UserName,
+			msg.From.FirstName,
 		)
 		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
@@ -110,9 +108,9 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		loadingMsg.ReplyToMessageID = msg.MessageID
 		sent, _ := bot.Send(loadingMsg)
 
-		go func(urlStr string, chatID int64, replyToID, loadingMsgID int) {
+		go func(url string, chatID int64, replyToID, loadingMsgID int) {
 			sem <- struct{}{}
-			files, mediaType, err := downloadMedia(urlStr)
+			files, mediaType, err := downloadMedia(url)
 			<-sem
 
 			// Delete loading message
@@ -122,7 +120,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			})
 
 			if err != nil {
-				log.Printf("❌ Download error for %s: %v", urlStr, err)
+				log.Printf("❌ Download error for %s: %v", url, err)
 				errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Yuklab bo‘lmadi: %v", err))
 				errorMsg.ReplyToMessageID = replyToID
 				bot.Send(errorMsg)
@@ -130,48 +128,13 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			}
 
 			for _, file := range files {
-				if err := sendMediaAndAttachShareButtons(bot, chatID, file, replyToID, mediaType); err != nil {
-					log.Printf("❌ Error sending media: %v", err)
-				}
+				sendMediaAndAttachShareButtons(bot, chatID, file, replyToID, mediaType)
 			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
 	}
 }
 
-// CALLBACK HANDLER
-func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery) {
-	switch query.Data {
-	case "forward": // (rarely used now, kept as fallback)
-		callback := tgbotapi.NewCallback(query.ID, "📤 Share button — iltimos tugmani ishlating.")
-		if _, err := bot.Request(callback); err != nil {
-			log.Printf("Error answering callback: %v", err)
-		}
-	case "add_group":
-		addGroupMsg := tgbotapi.NewMessage(query.Message.Chat.ID, "👥 Meni guruhingizga qo‘shing 👇")
-		addGroupMsg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonURL(
-					"➕ Guruhga qo‘shish",
-					fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
-				),
-			),
-		)
-		if _, err := bot.Send(addGroupMsg); err != nil {
-			log.Printf("Error sending group add message: %v", err)
-		}
-		callback := tgbotapi.NewCallback(query.ID, "✅ Guruhga qo‘shish uchun tayyor!")
-		if _, err := bot.Request(callback); err != nil {
-			log.Printf("Error answering callback: %v", err)
-		}
-	default:
-		callback := tgbotapi.NewCallback(query.ID, "❓ Noma’lum amal")
-		if _, err := bot.Request(callback); err != nil {
-			log.Printf("Error answering callback: %v", err)
-		}
-	}
-}
-
-// LINK EXTRACTION
+// ===================== LINK EXTRACTION =====================
 func extractSupportedLinks(text string) []string {
 	regex := `(https?://[^\s]+)`
 	matches := regexp.MustCompile(regex).FindAllString(text, -1)
@@ -194,7 +157,7 @@ func isSupportedLink(text string) bool {
 		strings.Contains(text, "pin.it")
 }
 
-// DOWNLOAD MEDIA
+// ===================== DOWNLOAD MEDIA =====================
 func downloadMedia(url string) ([]string, string, error) {
 	start := time.Now()
 	uniqueID := time.Now().UnixNano()
@@ -212,7 +175,7 @@ func downloadMedia(url string) ([]string, string, error) {
 	return nil, "", fmt.Errorf("unsupported link")
 }
 
-// YOUTUBE
+// ===================== YOUTUBE =====================
 func downloadYouTube(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{
 		"--no-playlist",
@@ -234,18 +197,12 @@ func downloadYouTube(url, output string, start time.Time) ([]string, string, err
 	return files, "video", err
 }
 
-// INSTAGRAM
+// ===================== INSTAGRAM =====================
 func downloadInstagram(url, output string, start time.Time) ([]string, string, error) {
-	args := []string{
-		"--no-warnings",
-		"--ffmpeg-location", ffmpegPath,
-		"-o", output,
-		url,
-	}
+	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
 	if fileExists(cookiesFile) {
 		args = append(args, "--cookies", cookiesFile)
 	}
-
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 Instagram yt-dlp output:\n%s", out)
 	if err != nil {
@@ -265,11 +222,10 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 			break
 		}
 	}
-
 	return files, mediaType, nil
 }
 
-// PINTEREST
+// ===================== PINTEREST =====================
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
 	if fileExists(cookiesFile) {
@@ -282,7 +238,7 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 		return files, "video", nil
 	}
 
-	// Fallback to gallery-dl for images
+	// Fallback: gallery-dl for images
 	argsGD := []string{"-d", downloadsDir, url}
 	if fileExists(cookiesFile) {
 		argsGD = []string{"--cookies", cookiesFile, "-d", downloadsDir, url}
@@ -297,7 +253,7 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 	return files, "image", nil
 }
 
-// HELPERS
+// ===================== HELPERS =====================
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
@@ -335,20 +291,24 @@ func filesCreatedAfterRecursive(dir string, t time.Time) []string {
 	return res
 }
 
-// SEND MEDIA, THEN ATTACH SHARE / ADD-TO-GROUP BUTTONS
+// ===================== SEND MEDIA WITH SHARE BUTTONS =====================
 func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) error {
 	var sentMsg tgbotapi.Message
 	var err error
 
-	// 1️⃣ Send media first (to get message ID)
+	caption := "@downloaderin123_bot orqali yuklab olindi"
+
+	// 1️⃣ Send media
 	switch mediaType {
 	case "video":
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 		video.ReplyToMessageID = replyTo
+		video.Caption = caption
 		sentMsg, err = bot.Send(video)
 	case "image":
 		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 		photo.ReplyToMessageID = replyTo
+		photo.Caption = caption
 		sentMsg, err = bot.Send(photo)
 	default:
 		return fmt.Errorf("unknown media type: %s", mediaType)
@@ -357,11 +317,10 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 		return fmt.Errorf("failed to send media: %w", err)
 	}
 
-	// 2️⃣ Generate share link for that message
+	// 2️⃣ Build share & group buttons
 	msgLink := fmt.Sprintf("https://t.me/%s/%d", bot.Self.UserName, sentMsg.MessageID)
 	shareURL := fmt.Sprintf("https://t.me/share/url?url=%s", url.QueryEscape(msgLink))
 
-	// 3️⃣ Create inline buttons
 	btnShare := tgbotapi.NewInlineKeyboardButtonURL("📤 Do'stlar bilan ulashish", shareURL)
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL(
 		"👥 Guruhga qo'shish",
@@ -373,10 +332,9 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
 
-	// 4️⃣ Attach the keyboard using NewEditMessageReplyMarkup
 	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, sentMsg.MessageID, keyboard)
 	if _, err := bot.Send(edit); err != nil {
-		log.Printf("⚠️ Warning: failed to attach keyboard: %v", err)
+		log.Printf("⚠️ Failed to attach keyboard: %v", err)
 	}
 
 	return nil

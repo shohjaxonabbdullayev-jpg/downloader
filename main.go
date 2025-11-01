@@ -15,27 +15,18 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const (
-	downloadsDir = "downloads"
-)
-
-var (
-	youtubeCookies   = "youtube_cookies.txt"
-	instagramCookies = "instagram_cookies.txt"
-	pinterestCookies = "pinterest_cookies.txt"
-)
+const downloadsDir = "downloads"
 
 func main() {
 	_ = godotenv.Load()
-
 	botToken := os.Getenv("BOT_TOKEN")
 	if botToken == "" {
-		log.Fatal("BOT_TOKEN not found in .env")
+		log.Fatal("BOT_TOKEN missing in .env")
 	}
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
-		log.Fatalf("Failed to create bot: %v", err)
+		log.Fatal(err)
 	}
 
 	log.Printf("🤖 Authorized as @%s", bot.Self.UserName)
@@ -43,7 +34,6 @@ func main() {
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
 	})
 	go http.ListenAndServe(":10000", nil)
 
@@ -55,67 +45,49 @@ func main() {
 		if update.Message == nil || update.Message.Text == "" {
 			continue
 		}
-		text := strings.TrimSpace(update.Message.Text)
 
-		go func() {
+		go func(text string, chatID int64) {
 			files, err := downloadMedia(text)
 			if err != nil {
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "❌ Yuklab olishda xatolik yuz berdi. Iltimos, havolani tekshirib qayta urinib ko‘ring.")
+				msg := tgbotapi.NewMessage(chatID, "❌ Yuklab olishda xatolik. Iltimos, havolani tekshirib qayta urinib ko‘ring.")
 				bot.Send(msg)
 				return
 			}
 
-			for _, file := range files {
-				sendMediaAndAttachShareButtons(bot, update.Message.Chat.ID, file)
-				os.Remove(file)
+			for _, f := range files {
+				sendMediaAndAttachShareButtons(bot, chatID, f)
+				os.Remove(f)
 			}
-		}()
+		}(update.Message.Text, update.Message.Chat.ID)
 	}
 }
-
-// ---------------- DOWNLOAD LOGIC ----------------
 
 func downloadMedia(url string) ([]string, error) {
 	uniqueID := time.Now().UnixNano()
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
 
 	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
-	isInstagram := strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am")
-	isPinterest := strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it")
+	isInstagram := strings.Contains(url, "instagram.com")
+	isPinterest := strings.Contains(url, "pinterest.com")
 	isTikTok := strings.Contains(url, "tiktok.com")
 
 	var cmd *exec.Cmd
 
 	switch {
 	case isYouTube:
-		if _, err := os.Stat(youtubeCookies); os.IsNotExist(err) {
-			if err := fetchCookies("https://www.youtube.com", youtubeCookies); err != nil {
-				return nil, fmt.Errorf("failed to fetch youtube cookies: %v", err)
-			}
-		}
-		cmd = exec.Command("yt-dlp", "--cookies", youtubeCookies, "-o", outputTemplate, "-f", "best", url)
+		cmd = exec.Command("yt-dlp", "--cookies", "youtube_cookies.txt", "-o", outputTemplate, "-f", "best", url)
 
 	case isInstagram:
-		if _, err := os.Stat(instagramCookies); os.IsNotExist(err) {
-			if err := fetchCookies("https://www.instagram.com", instagramCookies); err != nil {
-				return nil, fmt.Errorf("failed to fetch instagram cookies: %v", err)
-			}
-		}
-		cmd = exec.Command("yt-dlp", "--cookies", instagramCookies, "-o", outputTemplate, "--no-mtime", url)
+		cmd = exec.Command("yt-dlp", "--cookies", "instagram_cookies.txt", "-o", outputTemplate, "--no-mtime", url)
 
 	case isPinterest:
-		if _, err := os.Stat(pinterestCookies); os.IsNotExist(err) {
-			if err := fetchCookies("https://www.pinterest.com", pinterestCookies); err != nil {
-				return nil, fmt.Errorf("failed to fetch pinterest cookies: %v", err)
-			}
-		}
-		cmd = exec.Command("gallery-dl", "--cookies", pinterestCookies, "-d", downloadsDir, url)
+		cmd = exec.Command("gallery-dl", "--cookies", "pinterest_cookies.txt", "-d", downloadsDir, url)
 
 	case isTikTok:
 		cmd = exec.Command("yt-dlp", "-o", outputTemplate, url)
 
 	default:
-		return nil, fmt.Errorf("unsupported URL")
+		return nil, fmt.Errorf("unsupported link")
 	}
 
 	var errBuf bytes.Buffer
@@ -128,23 +100,8 @@ func downloadMedia(url string) ([]string, error) {
 	if err != nil || len(files) == 0 {
 		return nil, fmt.Errorf("no files found")
 	}
-
 	return files, nil
 }
-
-// ---------------- COOKIE FETCHER ----------------
-
-func fetchCookies(url string, filename string) error {
-	cmd := exec.Command("yt-dlp", "--cookies-from-browser", "chrome", "--dump-cookies", filename, url)
-	var errBuf bytes.Buffer
-	cmd.Stderr = &errBuf
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("cannot fetch cookies: %v", err)
-	}
-	return nil
-}
-
-// ---------------- MEDIA SENDER ----------------
 
 func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string) error {
 	caption := "@downloaderin123_bot orqali yuklab olindi"
@@ -155,7 +112,7 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 	)
 
 	ext := strings.ToLower(filepath.Ext(filePath))
-	if strings.Contains(ext, "jpg") || strings.Contains(ext, "jpeg") || strings.Contains(ext, "png") || strings.Contains(ext, "webp") {
+	if strings.Contains(ext, ".jpg") || strings.Contains(ext, ".png") || strings.Contains(ext, ".webp") {
 		msg := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 		msg.Caption = caption
 		msg.ReplyMarkup = shareKeyboard

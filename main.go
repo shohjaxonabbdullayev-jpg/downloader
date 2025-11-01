@@ -21,7 +21,7 @@ func main() {
 	_ = godotenv.Load()
 	botToken := os.Getenv("BOT_TOKEN")
 	if botToken == "" {
-		log.Fatal("BOT_TOKEN missing in .env")
+		log.Fatal("❌ BOT_TOKEN missing in .env")
 	}
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
@@ -32,10 +32,14 @@ func main() {
 	log.Printf("🤖 Authorized as @%s", bot.Self.UserName)
 	os.MkdirAll(downloadsDir, os.ModePerm)
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	go http.ListenAndServe(":10000", nil)
+	// Health check server (needed for Render)
+	go func() {
+		http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ok"))
+		})
+		log.Fatal(http.ListenAndServe(":10000", nil))
+	}()
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -47,82 +51,139 @@ func main() {
 		}
 
 		go func(text string, chatID int64) {
-			files, err := downloadMedia(text)
-			if err != nil {
-				msg := tgbotapi.NewMessage(chatID, "❌ Yuklab olishda xatolik. Iltimos, havolani tekshirib qayta urinib ko‘ring.")
-				bot.Send(msg)
+			links := extractLinks(text)
+			if len(links) == 0 {
 				return
 			}
 
-			for _, f := range files {
-				sendMediaAndAttachShareButtons(bot, chatID, f)
-				os.Remove(f)
+			for _, link := range links {
+				files, err := downloadMedia(link)
+				if err != nil {
+					log.Printf("❌ %v", err)
+					bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Yuklab bo‘lmadi: %v", err)))
+					continue
+				}
+				for _, f := range files {
+					sendMedia(bot, chatID, f)
+					os.Remove(f)
+				}
 			}
 		}(update.Message.Text, update.Message.Chat.ID)
 	}
 }
 
+func extractLinks(text string) []string {
+	parts := strings.Fields(text)
+	var links []string
+	for _, p := range parts {
+		if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
+			links = append(links, p)
+		}
+	}
+	return links
+}
+
 func downloadMedia(url string) ([]string, error) {
+	start := time.Now()
 	uniqueID := time.Now().UnixNano()
 	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
 
 	isYouTube := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
 	isInstagram := strings.Contains(url, "instagram.com")
-	isPinterest := strings.Contains(url, "pinterest.com")
+	isPinterest := strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it")
 	isTikTok := strings.Contains(url, "tiktok.com")
 
 	var cmd *exec.Cmd
 
 	switch {
 	case isYouTube:
-		cmd = exec.Command("yt-dlp", "--cookies", "youtube_cookies.txt", "-o", outputTemplate, "-f", "best", url)
+		args := []string{"--no-warnings", "--no-playlist", "-o", outputTemplate, "-f", "best[height<=720]"}
+		if fileExists("youtube_cookies.txt") {
+			args = append(args, "--cookies", "youtube_cookies.txt")
+		}
+		args = append(args, url)
+		cmd = exec.Command("yt-dlp", args...)
 
 	case isInstagram:
-		cmd = exec.Command("yt-dlp", "--cookies", "instagram_cookies.txt", "-o", outputTemplate, "--no-mtime", url)
+		args := []string{"--no-warnings", "-o", outputTemplate}
+		if fileExists("instagram_cookies.txt") {
+			args = append(args, "--cookies", "instagram_cookies.txt")
+		}
+		args = append(args, url)
+		cmd = exec.Command("yt-dlp", args...)
 
 	case isPinterest:
-		cmd = exec.Command("gallery-dl", "--cookies", "pinterest_cookies.txt", "-d", downloadsDir, url)
+		if fileExists("pinterest_cookies.txt") {
+			cmd = exec.Command("gallery-dl", "--cookies", "pinterest_cookies.txt", "-d", downloadsDir, url)
+		} else {
+			cmd = exec.Command("gallery-dl", "-d", downloadsDir, url)
+		}
 
 	case isTikTok:
-		cmd = exec.Command("yt-dlp", "-o", outputTemplate, url)
+		args := []string{"--no-warnings", "-o", outputTemplate}
+		cmd = exec.Command("yt-dlp", args...)
 
 	default:
-		return nil, fmt.Errorf("unsupported link")
+		return nil, fmt.Errorf("unsupported link type")
 	}
 
-	var errBuf bytes.Buffer
-	cmd.Stderr = &errBuf
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("download failed: %v", err)
+		return nil, fmt.Errorf("download failed: %v\n%s", err, out.String())
 	}
 
-	files, err := filepath.Glob(fmt.Sprintf("%s/%d_*", downloadsDir, uniqueID))
-	if err != nil || len(files) == 0 {
-		return nil, fmt.Errorf("no files found")
+	files := filesCreatedAfter(downloadsDir, start)
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no media downloaded")
 	}
 	return files, nil
 }
 
-func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string) error {
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func filesCreatedAfter(dir string, t time.Time) []string {
+	var res []string
+	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if info.ModTime().After(t) {
+			res = append(res, path)
+		}
+		return nil
+	})
+	return res
+}
+
+func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string) error {
 	caption := "@downloaderin123_bot orqali yuklab olindi"
-	shareKeyboard := tgbotapi.NewInlineKeyboardMarkup(
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonURL("🔗 Do‘stlarga ulashish", "https://t.me/downloaderin123_bot"),
 		),
 	)
 
 	ext := strings.ToLower(filepath.Ext(filePath))
-	if strings.Contains(ext, ".jpg") || strings.Contains(ext, ".png") || strings.Contains(ext, ".webp") {
+	if strings.HasSuffix(ext, ".jpg") || strings.HasSuffix(ext, ".png") || strings.HasSuffix(ext, ".webp") {
 		msg := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 		msg.Caption = caption
-		msg.ReplyMarkup = shareKeyboard
+		msg.ReplyMarkup = keyboard
 		_, err := bot.Send(msg)
 		return err
 	}
 
 	msg := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 	msg.Caption = caption
-	msg.ReplyMarkup = shareKeyboard
+	msg.ReplyMarkup = keyboard
 	_, err := bot.Send(msg)
 	return err
 }

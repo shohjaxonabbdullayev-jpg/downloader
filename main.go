@@ -25,7 +25,7 @@ const (
 var (
 	downloadsDir = "downloads"
 	cookiesFile  = "cookies.txt"
-	sem          = make(chan struct{}, 3) // Limit 3 concurrent downloads
+	sem          = make(chan struct{}, 3)
 )
 
 func main() {
@@ -63,6 +63,8 @@ func main() {
 	for update := range updates {
 		if update.Message != nil {
 			go handleMessage(bot, update.Message)
+		} else if update.CallbackQuery != nil {
+			handleCallback(bot, update.CallbackQuery)
 		}
 	}
 }
@@ -130,6 +132,59 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 				sendMediaWithButtons(bot, chatID, file, replyToID, mediaType)
 			}
 		}(link, chatID, msg.MessageID, sent.MessageID)
+	}
+}
+
+// ===================== CALLBACK HANDLER =====================
+func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery) {
+	switch query.Data {
+	case "forward":
+		// Send message with forward/share instruction
+		msg := tgbotapi.NewMessage(query.Message.Chat.ID, "📨 Ushbu videoni do‘stlaringizga yuboring 👇")
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonURL(
+					"📩 Do‘stlarga yuborish",
+					fmt.Sprintf("https://t.me/%s", bot.Self.UserName),
+				),
+			),
+		)
+
+		if _, err := bot.Send(msg); err != nil {
+			log.Printf("Error sending forward message: %v", err)
+		}
+
+		// ✅ FIX: AnswerCallbackQuery must receive *tgbotapi.CallbackConfig
+		callback := tgbotapi.NewCallback(query.ID, "✅ Ulashish uchun tayyor!")
+		if _, err := bot.Request(callback); err != nil {
+			log.Printf("Error answering callback: %v", err)
+		}
+
+	case "add_group":
+		addGroupMsg := tgbotapi.NewMessage(query.Message.Chat.ID, "👥 Meni guruhingizga qo‘shing 👇")
+		addGroupMsg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonURL(
+					"➕ Guruhga qo‘shish",
+					fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
+				),
+			),
+		)
+
+		if _, err := bot.Send(addGroupMsg); err != nil {
+			log.Printf("Error sending group add message: %v", err)
+		}
+
+		callback := tgbotapi.NewCallback(query.ID, "✅ Guruhga qo‘shish uchun tayyor!")
+		if _, err := bot.Request(callback); err != nil {
+			log.Printf("Error answering callback: %v", err)
+		}
+
+	default:
+		callback := tgbotapi.NewCallback(query.ID, "❓ Noma’lum amal")
+		if _, err := bot.Request(callback); err != nil {
+			log.Printf("Error answering callback: %v", err)
+		}
 	}
 }
 
@@ -233,7 +288,6 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 
 // ===================== PINTEREST =====================
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
-	// Try yt-dlp for video
 	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
 	if fileExists(cookiesFile) {
 		args = append(args, "--cookies", cookiesFile)
@@ -300,16 +354,16 @@ func filesCreatedAfterRecursive(dir string, t time.Time) []string {
 
 // ===================== SEND MEDIA WITH BUTTONS =====================
 func sendMediaWithButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) {
-	btnForward := tgbotapi.NewInlineKeyboardButtonURL(
-		"Do'stlar bilan ulashish",
-		fmt.Sprintf("https://t.me/%s", bot.Self.UserName),
-	)
+	btnShare := tgbotapi.NewInlineKeyboardButtonData("📤 Do'stlar bilan ulashish", "forward")
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL(
-		"Guruhga qo'shish",
+		"👥 Guruhga qo'shish",
 		fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
 	)
-	row := tgbotapi.NewInlineKeyboardRow(btnForward, btnGroup)
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(row)
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(btnShare),
+		tgbotapi.NewInlineKeyboardRow(btnGroup),
+	)
 
 	switch mediaType {
 	case "video":

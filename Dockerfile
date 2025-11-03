@@ -49,7 +49,9 @@ WORKDIR /app
 COPY --from=builder /app/downloader-bot .
 
 # Optional cookies and downloads folder
-COPY cookies.txt ./cookies.txt
+COPY instagram.txt ./instagram.txt
+COPY youtube.txt ./youtube.txt
+COPY pinterest.txt ./pinterest.txt
 RUN mkdir -p downloads
 
 # Environment variables

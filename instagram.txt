@@ -1,0 +1,25 @@
+# Netscape HTTP Cookie File
+# http://curl.haxx.se/rfc/cookie_spec.html
+# This is a generated file!  Do not edit.
+
+.instagram.com	TRUE	/	TRUE	1765904884	datr	9DkyZwnEJjfC6yVLqd03Luqb
+.instagram.com	TRUE	/	TRUE	1762880886	ig_did	3C74FEA2-40A3-4A46-A316-C739F00BCEA4
+.instagram.com	TRUE	/	TRUE	1762880885	ig_nrcb	1
+.instagram.com	TRUE	/	TRUE	1769934069	ds_user_id	57288693839
+.instagram.com	TRUE	/	TRUE	1787467146	mid	aHs9igALAAGVQohc7PDmZZQhKb7Z
+.instagram.com	TRUE	/	TRUE	1787467148	ps_l	1
+.instagram.com	TRUE	/	TRUE	1787467148	ps_n	1
+.instagram.com	TRUE	/	TRUE	1796718069	csrftoken	eocwwQapIcnYZwHYa1BTjWZnazDPeYKc
+sssinstagram.com	FALSE	/	FALSE	1795678577	uid	7b5308e42eb85802
+.sssinstagram.com	TRUE	/	FALSE	1795682203	_ga	GA1.1.90545103.1761118578
+sssinstagram.com	FALSE	/	FALSE	1763710578	errorFallbackPopup	6
+sssinstagram.com	FALSE	/	FALSE	1763710578	adsForm	85
+sssinstagram.com	FALSE	/	FALSE	1763710578	adsAfterSearch	67
+sssinstagram.com	FALSE	/	FALSE	1763710578	adsPopupClick	54
+.sssinstagram.com	TRUE	/	FALSE	1795682203	_ga_KDHKH4GDQE	GS2.1.s1761122202$o2$g1$t1761122203$j59$l0$h0
+.sssinstagram.com	TRUE	/	TRUE	1794814578	__gads	ID=9a5ca274c62de257:T=1761118578:RT=1761122203:S=ALNI_MaOlquJ3V8xLc8WYUYLhhlW-kFOyg
+.sssinstagram.com	TRUE	/	TRUE	1776670578	__eoi	ID=4e2dc30d69eda6f6:T=1761118578:RT=1761122203:S=AA-AfjZbUtBLkUAqppFyRp09eB6u
+.sssinstagram.com	TRUE	/	FALSE	1792658211	FCNEC	%5B%5B%22AKsRol8ObfgD_9Izegmehk63hD9K6fWsGgqz7SDTC2xlz_g3O7YH3ewjf91TwWNqNY3rAUYbqF52Z6KWZLgaE1_N-ZorzdSoU5jaoOZHTfGB5ZzI0SIoWylNwccjp2TyrncrUTAZ5as4YFmbWl4XS6FEPTaE-ncRfA%3D%3D%22%5D%5D
+.instagram.com	TRUE	/	TRUE	1762762761	wd	1920x953
+.instagram.com	TRUE	/	TRUE	1793693955	sessionid	57288693839%3AEPShmkRePXf7CT%3A10%3AAYhyVSgGEd45K8Di8gG3dUl9Zt4wuRvE-R8MIAHBzg
+.instagram.com	TRUE	/	TRUE	0	rur	"CLN\05457288693839\0541793694071:01fe1b6f38242795e21592d543ea940e4d0b4aa2c31319fc84328a3a9a5421b485ecb4a1"

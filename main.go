@@ -24,9 +24,11 @@ const (
 )
 
 var (
-	downloadsDir = "downloads"
-	cookiesFile  = "cookies.txt"
-	sem          = make(chan struct{}, 3)
+	downloadsDir  = "downloads"
+	instagramFile = "instagram.txt"
+	youtubeFile   = "youtube.txt"
+	pinterestFile = "pinterest.txt"
+	sem           = make(chan struct{}, 3)
 )
 
 func main() {
@@ -187,8 +189,8 @@ func downloadYouTube(url, output string, start time.Time) ([]string, string, err
 		"-o", output,
 		url,
 	}
-	if fileExists(cookiesFile) {
-		args = append(args, "--cookies", cookiesFile)
+	if fileExists(youtubeFile) {
+		args = append(args, "--cookies", youtubeFile)
 	}
 
 	out, err := runCommandCapture(ytDlpPath, args...)
@@ -200,8 +202,8 @@ func downloadYouTube(url, output string, start time.Time) ([]string, string, err
 // ===================== INSTAGRAM =====================
 func downloadInstagram(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
-	if fileExists(cookiesFile) {
-		args = append(args, "--cookies", cookiesFile)
+	if fileExists(instagramFile) {
+		args = append(args, "--cookies", instagramFile)
 	}
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 Instagram yt-dlp output:\n%s", out)
@@ -228,8 +230,8 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 // ===================== PINTEREST =====================
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
-	if fileExists(cookiesFile) {
-		args = append(args, "--cookies", cookiesFile)
+	if fileExists(pinterestFile) {
+		args = append(args, "--cookies", pinterestFile)
 	}
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 Pinterest yt-dlp output:\n%s", out)
@@ -240,8 +242,8 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 
 	// Fallback: gallery-dl for images
 	argsGD := []string{"-d", downloadsDir, url}
-	if fileExists(cookiesFile) {
-		argsGD = []string{"--cookies", cookiesFile, "-d", downloadsDir, url}
+	if fileExists(pinterestFile) {
+		argsGD = []string{"--cookies", pinterestFile, "-d", downloadsDir, url}
 	}
 	out, err = runCommandCapture("gallery-dl", argsGD...)
 	log.Printf("🖼️ Pinterest gallery-dl output:\n%s", out)

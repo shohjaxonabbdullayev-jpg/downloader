@@ -186,35 +186,25 @@ func downloadMedia(url string) ([]string, string, error) {
 
 // ===================== YOUTUBE (YT1S PRIVATE API) =====================
 func downloadYouTube(url, output string, start time.Time) ([]string, string, error) {
-	scriptPath := "yt1s_dl.py"
-
-	if !fileExists(scriptPath) {
-		return nil, "", fmt.Errorf("yt1s_dl.py script not found — please place it in the project root")
-	}
-
-	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
-		return nil, "", fmt.Errorf("failed to create downloads dir: %v", err)
-	}
-
 	log.Printf("🚀 Using yt1s-private-api for YouTube: %s", url)
 
-	// Run yt1s_dl.py script
-	cmd := exec.Command("python3", scriptPath, url)
-	cmd.Dir = downloadsDir
-	var combined bytes.Buffer
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
+	// Run the yt1s_dl.py script directly from /app/
+	cmd := exec.Command("python3", "yt1s_dl.py", url)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
 
 	err := cmd.Run()
-	out := combined.String()
-	log.Printf("🧾 yt1s-private-api output:\n%s", out)
+	log.Printf("🧾 yt1s-private-api output:\n%s", out.String())
+
 	if err != nil {
 		return nil, "", fmt.Errorf("yt1s-private-api error: %v", err)
 	}
 
+	// After yt1s_dl.py runs, your script should download the file into /app/downloads/
 	files := filesCreatedAfterRecursive(downloadsDir, start)
 	if len(files) == 0 {
-		return nil, "", fmt.Errorf("no files downloaded from yt1s-private-api")
+		return nil, "", fmt.Errorf("no files downloaded by yt1s-private-api")
 	}
 
 	return files, "video", nil

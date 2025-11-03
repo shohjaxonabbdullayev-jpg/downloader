@@ -184,38 +184,40 @@ func downloadMedia(url string) ([]string, string, error) {
 	return nil, "", fmt.Errorf("unsupported link")
 }
 
-// ===================== YOUTUBE =====================
+// ===================== YOUTUBE (YT1S PRIVATE API) =====================
 func downloadYouTube(url, output string, start time.Time) ([]string, string, error) {
-	args := []string{
-		"--no-playlist",
-		"--no-warnings",
-		"--restrict-filenames",
-		"--ffmpeg-location", ffmpegPath,
-		"-f", "bestvideo[height<=720]+bestaudio/best",
-		"--merge-output-format", "mp4",
-		"-o", output,
-		url,
-	}
-	if fileExists(youtubeFile) {
-		args = append(args, "--cookies", youtubeFile)
+	scriptPath := "yt1s_dl.py"
+
+	if !fileExists(scriptPath) {
+		return nil, "", fmt.Errorf("yt1s_dl.py script not found — please place it in the project root")
 	}
 
-	out, err := runCommandCapture(ytDlpPath, args...)
-	log.Printf("🧾 yt-dlp output:\n%s", out)
+	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
+		return nil, "", fmt.Errorf("failed to create downloads dir: %v", err)
+	}
 
-	if strings.Contains(out, "Login required") || strings.Contains(out, "cookies") || strings.Contains(out, "expired") {
-		log.Println("⚠️ YouTube cookies might be expired — please update youtube.txt")
+	log.Printf("🚀 Using yt1s-private-api for YouTube: %s", url)
 
-		adminChat := os.Getenv("ADMIN_CHAT_ID")
-		if adminChat == "" {
-			log.Println("ℹ️ No ADMIN_CHAT_ID set, skipping Telegram notification")
-		} else {
-			notifyAdmin(adminChat, "⚠️ YouTube cookies expired! Please update youtube.txt in the server.")
-		}
+	// Run yt1s_dl.py script
+	cmd := exec.Command("python3", scriptPath, url)
+	cmd.Dir = downloadsDir
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+
+	err := cmd.Run()
+	out := combined.String()
+	log.Printf("🧾 yt1s-private-api output:\n%s", out)
+	if err != nil {
+		return nil, "", fmt.Errorf("yt1s-private-api error: %v", err)
 	}
 
 	files := filesCreatedAfterRecursive(downloadsDir, start)
-	return files, "video", err
+	if len(files) == 0 {
+		return nil, "", fmt.Errorf("no files downloaded from yt1s-private-api")
+	}
+
+	return files, "video", nil
 }
 
 // ===================== INSTAGRAM =====================
@@ -341,7 +343,6 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 
 	caption := "@downloaderin123_bot orqali yuklab olindi"
 
-	// 1️⃣ Send media
 	switch mediaType {
 	case "video":
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
@@ -360,7 +361,6 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 		return fmt.Errorf("failed to send media: %w", err)
 	}
 
-	// 2️⃣ Build share & group buttons
 	msgLink := fmt.Sprintf("https://t.me/%s/%d", bot.Self.UserName, sentMsg.MessageID)
 	shareURL := fmt.Sprintf("https://t.me/share/url?url=%s", url.QueryEscape(msgLink))
 

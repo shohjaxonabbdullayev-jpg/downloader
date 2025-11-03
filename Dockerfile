@@ -9,18 +9,18 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# Download Go modules
+# Copy Go module files and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy app source
+# Copy the rest of the source code
 COPY . .
 
-# Build Go binary
+# Build the Go binary
 RUN go build -o downloader-bot .
 
 # ==============================
-# 🚀 STAGE 2 — Final lightweight image
+# 🚀 STAGE 2 — Final runtime image
 # ==============================
 FROM debian:bookworm-slim
 
@@ -36,30 +36,29 @@ RUN apt-get update && \
         git && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Install Python packages yt-dlp and gallery-dl in isolated venv
-RUN python3 -m venv /opt/yt && \
-    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
-    ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
-    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
+# ✅ Install yt-dlp, gallery-dl, and requests (for yt1s_dl.py)
+RUN pip3 install --no-cache-dir yt-dlp gallery-dl requests
 
-# Create app directory
+# Create working directory
 WORKDIR /app
 
-# Copy Go binary
-COPY --from=builder /app/downloader-bot .
+# Copy Go binary and Python downloader script
+COPY --from=builder /app/downloader-bot ./
+COPY yt1s_dl.py ./yt1s_dl.py
 
-# Optional cookies and downloads folder
+# Copy optional cookies (only Instagram & Pinterest)
 COPY instagram.txt ./instagram.txt
-COPY youtube.txt ./youtube.txt
 COPY pinterest.txt ./pinterest.txt
-RUN mkdir -p downloads
+
+# Create downloads folder
+RUN mkdir -p /app/downloads
 
 # Environment variables
 ENV PORT=10000
 EXPOSE 10000
 
-# Health check
+# Health check (optional)
 HEALTHCHECK CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run bot
+# Run the Telegram bot
 CMD ["/app/downloader-bot"]

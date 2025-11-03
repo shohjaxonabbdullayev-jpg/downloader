@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     rm -rf /var/lib/apt/lists/*
 
 # Download Go modules
-COPY go.mod go.sum ./
+COPY go.mod go.sum ./ 
 RUN go mod download
 
 # Copy app source
@@ -36,17 +36,21 @@ RUN apt-get update && \
         git && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Install Python packages yt-dlp and gallery-dl in isolated venv
+# ✅ Install Python packages yt-dlp, gallery-dl, and requests in isolated venv
 RUN python3 -m venv /opt/yt && \
-    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
+    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl requests && \
     ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
-    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
+    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl && \
+    ln -s /opt/yt/bin/python /usr/local/bin/python3
 
 # Create app directory
 WORKDIR /app
 
 # Copy Go binary
 COPY --from=builder /app/downloader-bot .
+
+# ✅ Copy yt1s_dl.py for YouTube downloading
+COPY yt1s_dl.py ./yt1s_dl.py
 
 # Optional cookies and downloads folder
 COPY instagram.txt ./instagram.txt

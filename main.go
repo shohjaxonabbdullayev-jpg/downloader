@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -201,6 +202,18 @@ func downloadYouTube(url, output string, start time.Time) ([]string, string, err
 
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 yt-dlp output:\n%s", out)
+
+	if strings.Contains(out, "Login required") || strings.Contains(out, "cookies") || strings.Contains(out, "expired") {
+		log.Println("⚠️ YouTube cookies might be expired — please update youtube.txt")
+
+		adminChat := os.Getenv("ADMIN_CHAT_ID")
+		if adminChat == "" {
+			log.Println("ℹ️ No ADMIN_CHAT_ID set, skipping Telegram notification")
+		} else {
+			notifyAdmin(adminChat, "⚠️ YouTube cookies expired! Please update youtube.txt in the server.")
+		}
+	}
+
 	files := filesCreatedAfterRecursive(downloadsDir, start)
 	return files, "video", err
 }
@@ -297,6 +310,28 @@ func filesCreatedAfterRecursive(dir string, t time.Time) []string {
 		return fi.ModTime().Before(fj.ModTime())
 	})
 	return res
+}
+
+func notifyAdmin(chatID string, msg string) {
+	token := os.Getenv("BOT_TOKEN")
+	if token == "" {
+		log.Println("⚠️ BOT_TOKEN missing, cannot notify admin")
+		return
+	}
+
+	bot, err := tgbotapi.NewBotAPI(token)
+	if err != nil {
+		log.Printf("⚠️ Failed to init bot for admin notify: %v", err)
+		return
+	}
+
+	chat, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		log.Printf("⚠️ Invalid ADMIN_CHAT_ID: %v", err)
+		return
+	}
+
+	bot.Send(tgbotapi.NewMessage(chat, msg))
 }
 
 // ===================== SEND MEDIA WITH SHARE BUTTONS =====================

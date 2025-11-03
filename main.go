@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -11,7 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
+
 	"strings"
 	"time"
 
@@ -27,11 +29,15 @@ const (
 var (
 	downloadsDir  = "downloads"
 	instagramFile = "instagram.txt"
-	youtubeFile   = "youtube.txt"
 	pinterestFile = "pinterest.txt"
 	sem           = make(chan struct{}, 3)
 )
 
+// ===========================================================
+//
+//	MAIN
+//
+// ===========================================================
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("⚠️ .env file not found, using system environment")
@@ -71,7 +77,11 @@ func main() {
 	}
 }
 
-// ===================== HEALTH CHECK =====================
+// ===========================================================
+//
+//	HEALTH CHECK SERVER
+//
+// ===========================================================
 func startHealthCheckServer(port string) {
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -84,7 +94,11 @@ func startHealthCheckServer(port string) {
 	}
 }
 
-// ===================== MESSAGE HANDLER =====================
+// ===========================================================
+//
+//	MESSAGE HANDLER
+//
+// ===========================================================
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
@@ -143,7 +157,11 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	}
 }
 
-// ===================== LINK EXTRACTION =====================
+// ===========================================================
+//
+//	LINK EXTRACTION
+//
+// ===========================================================
 func extractSupportedLinks(text string) []string {
 	regex := `(https?://[^\s]+)`
 	matches := regexp.MustCompile(regex).FindAllString(text, -1)
@@ -166,7 +184,11 @@ func isSupportedLink(text string) bool {
 		strings.Contains(text, "pin.it")
 }
 
-// ===================== DOWNLOAD MEDIA =====================
+// ===========================================================
+//
+//	DOWNLOAD MEDIA
+//
+// ===========================================================
 func downloadMedia(url string) ([]string, string, error) {
 	start := time.Now()
 	uniqueID := time.Now().UnixNano()
@@ -174,7 +196,7 @@ func downloadMedia(url string) ([]string, string, error) {
 
 	switch {
 	case strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be"):
-		return downloadYouTube(url, outputTemplate, start)
+		return downloadYouTubeRapidAPI(url)
 	case strings.Contains(url, "instagram.com") || strings.Contains(url, "instagr.am"):
 		return downloadInstagram(url, outputTemplate, start)
 	case strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it"):
@@ -184,33 +206,71 @@ func downloadMedia(url string) ([]string, string, error) {
 	return nil, "", fmt.Errorf("unsupported link")
 }
 
-// ===================== YOUTUBE (YT1S PRIVATE API) =====================
-func downloadYouTube(url, output string, start time.Time) ([]string, string, error) {
-	log.Printf("🚀 Using yt1s-private-api for YouTube: %s", url)
+// ===========================================================
+//
+//	YOUTUBE (USING RAPIDAPI)
+//
+// ===========================================================
+func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
+	apiKey := os.Getenv("RAPIDAPI_KEY")
+	if apiKey == "" {
+		return nil, "", fmt.Errorf("RAPIDAPI_KEY not set")
+	}
 
-	// Run the yt1s_dl.py script directly from /app/
-	cmd := exec.Command("python3", "yt1s_dl.py", url)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	formData := url.Values{}
+	formData.Set("query", videoURL)
 
-	err := cmd.Run()
-	log.Printf("🧾 yt1s-private-api output:\n%s", out.String())
-
+	req, err := http.NewRequest("POST", "https://youtube-downloader-video.p.rapidapi.com/search_all", strings.NewReader(formData.Encode()))
 	if err != nil {
-		return nil, "", fmt.Errorf("yt1s-private-api error: %v", err)
+		return nil, "", fmt.Errorf("request creation failed: %v", err)
 	}
 
-	// After yt1s_dl.py runs, your script should download the file into /app/downloads/
-	files := filesCreatedAfterRecursive(downloadsDir, start)
-	if len(files) == 0 {
-		return nil, "", fmt.Errorf("no files downloaded by yt1s-private-api")
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Add("x-rapidapi-host", "youtube-downloader-video.p.rapidapi.com")
+	req.Header.Add("x-rapidapi-key", apiKey)
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("API request failed: %v", err)
+	}
+	defer res.Body.Close()
+
+	body, _ := io.ReadAll(res.Body)
+	log.Printf("🧾 RapidAPI Response: %s", string(body))
+
+	// Try to extract a direct .mp4 link
+	re := regexp.MustCompile(`https://[^\s"]+\.mp4[^\s"]*`)
+	match := re.FindString(string(body))
+	if match == "" {
+		return nil, "", fmt.Errorf("no .mp4 link found in API response")
 	}
 
-	return files, "video", nil
+	filePath := filepath.Join(downloadsDir, fmt.Sprintf("%d_youtube.mp4", time.Now().UnixNano()))
+	out, err := os.Create(filePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("file creation failed: %v", err)
+	}
+	defer out.Close()
+
+	resp, err := http.Get(match)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to download video: %v", err)
+	}
+	defer resp.Body.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to save video: %v", err)
+	}
+
+	return []string{filePath}, "video", nil
 }
 
-// ===================== INSTAGRAM =====================
+// ===========================================================
+//
+//	INSTAGRAM & PINTEREST
+//
+// ===========================================================
 func downloadInstagram(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
 	if fileExists(instagramFile) {
@@ -238,7 +298,6 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 	return files, mediaType, nil
 }
 
-// ===================== PINTEREST =====================
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
 	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
 	if fileExists(pinterestFile) {
@@ -266,7 +325,11 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 	return files, "image", nil
 }
 
-// ===================== HELPERS =====================
+// ===========================================================
+//
+//	HELPER FUNCTIONS
+//
+// ===========================================================
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
@@ -304,29 +367,11 @@ func filesCreatedAfterRecursive(dir string, t time.Time) []string {
 	return res
 }
 
-func notifyAdmin(chatID string, msg string) {
-	token := os.Getenv("BOT_TOKEN")
-	if token == "" {
-		log.Println("⚠️ BOT_TOKEN missing, cannot notify admin")
-		return
-	}
-
-	bot, err := tgbotapi.NewBotAPI(token)
-	if err != nil {
-		log.Printf("⚠️ Failed to init bot for admin notify: %v", err)
-		return
-	}
-
-	chat, err := strconv.ParseInt(chatID, 10, 64)
-	if err != nil {
-		log.Printf("⚠️ Invalid ADMIN_CHAT_ID: %v", err)
-		return
-	}
-
-	bot.Send(tgbotapi.NewMessage(chat, msg))
-}
-
-// ===================== SEND MEDIA WITH SHARE BUTTONS =====================
+// ===========================================================
+//
+//	SEND MEDIA + SHARE BUTTONS
+//
+// ===========================================================
 func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) error {
 	var sentMsg tgbotapi.Message
 	var err error
@@ -347,6 +392,7 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 	default:
 		return fmt.Errorf("unknown media type: %s", mediaType)
 	}
+
 	if err != nil {
 		return fmt.Errorf("failed to send media: %w", err)
 	}

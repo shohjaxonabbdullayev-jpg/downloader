@@ -99,6 +99,11 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
 	}
+	if text == "/help" {
+		helpMsg := "❓ Yordam kerak bo'lsa @nonfindable1 ga murojaat qiling."
+		bot.Send(tgbotapi.NewMessage(chatID, helpMsg))
+		return
+	}
 
 	links := extractSupportedLinks(text)
 	if len(links) == 0 {

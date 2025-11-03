@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-
 	"strings"
 	"time"
 
@@ -87,11 +86,8 @@ func startHealthCheckServer(port string) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprint(w, "OK")
 	})
-
 	log.Printf("💚 Health check server running on port %s", port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
-		log.Fatalf("❌ Health check server failed: %v", err)
-	}
+	http.ListenAndServe(":"+port, nil)
 }
 
 // ===========================================================
@@ -104,7 +100,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	if text == "" {
 		return
 	}
-
 	chatID := msg.Chat.ID
 
 	if text == "/start" {
@@ -116,8 +111,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		return
 	}
 	if text == "/help" {
-		helpMsg := "❓ Yordam kerak bo'lsa @nonfindable1 ga murojaat qiling."
-		bot.Send(tgbotapi.NewMessage(chatID, helpMsg))
+		bot.Send(tgbotapi.NewMessage(chatID, "❓ Yordam uchun @nonfindable1 bilan bog‘laning."))
 		return
 	}
 
@@ -136,11 +130,8 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := downloadMedia(url)
 			<-sem
 
-			// Delete loading message
-			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
-				ChatID:    chatID,
-				MessageID: loadingMsgID,
-			})
+			// delete loading message
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: loadingMsgID})
 
 			if err != nil {
 				log.Printf("❌ Download error for %s: %v", url, err)
@@ -191,8 +182,7 @@ func isSupportedLink(text string) bool {
 // ===========================================================
 func downloadMedia(url string) ([]string, string, error) {
 	start := time.Now()
-	uniqueID := time.Now().UnixNano()
-	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", uniqueID))
+	outputTemplate := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().UnixNano()))
 
 	switch {
 	case strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be"):
@@ -201,14 +191,14 @@ func downloadMedia(url string) ([]string, string, error) {
 		return downloadInstagram(url, outputTemplate, start)
 	case strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it"):
 		return downloadPinterest(url, outputTemplate, start)
+	default:
+		return nil, "", fmt.Errorf("unsupported link")
 	}
-
-	return nil, "", fmt.Errorf("unsupported link")
 }
 
 // ===========================================================
 //
-//	YOUTUBE (USING RAPIDAPI)
+//	YOUTUBE (USING yt-api.p.rapidapi.com)
 //
 // ===========================================================
 func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
@@ -217,16 +207,14 @@ func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
 		return nil, "", fmt.Errorf("RAPIDAPI_KEY not set")
 	}
 
-	formData := url.Values{}
-	formData.Set("query", videoURL)
+	escapedURL := url.QueryEscape(videoURL)
+	apiEndpoint := fmt.Sprintf("https://yt-api.p.rapidapi.com/resolve?url=%s", escapedURL)
 
-	req, err := http.NewRequest("POST", "https://youtube-downloader-video.p.rapidapi.com/search_all", strings.NewReader(formData.Encode()))
+	req, err := http.NewRequest("GET", apiEndpoint, nil)
 	if err != nil {
-		return nil, "", fmt.Errorf("request creation failed: %v", err)
+		return nil, "", err
 	}
-
-	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Add("x-rapidapi-host", "youtube-downloader-video.p.rapidapi.com")
+	req.Header.Add("x-rapidapi-host", "yt-api.p.rapidapi.com")
 	req.Header.Add("x-rapidapi-key", apiKey)
 
 	res, err := http.DefaultClient.Do(req)
@@ -235,32 +223,47 @@ func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
 	}
 	defer res.Body.Close()
 
-	body, _ := io.ReadAll(res.Body)
-	log.Printf("🧾 RapidAPI Response: %s", string(body))
+	if res.StatusCode != 200 {
+		body, _ := io.ReadAll(res.Body)
+		return nil, "", fmt.Errorf("API response error: %s", string(body))
+	}
 
-	// Try to extract a direct .mp4 link
-	re := regexp.MustCompile(`https://[^\s"]+\.mp4[^\s"]*`)
-	match := re.FindString(string(body))
-	if match == "" {
-		return nil, "", fmt.Errorf("no .mp4 link found in API response")
+	var data map[string]interface{}
+	if err := json.NewDecoder(res.Body).Decode(&data); err != nil {
+		return nil, "", fmt.Errorf("failed to parse JSON: %v", err)
+	}
+
+	// Extract MP4 video link
+	videoURLFound := ""
+	if formats, ok := data["formats"].([]interface{}); ok {
+		for _, f := range formats {
+			format := f.(map[string]interface{})
+			if fmtStr, ok := format["url"].(string); ok && strings.Contains(fmtStr, ".googlevideo.com") {
+				videoURLFound = fmtStr
+				break
+			}
+		}
+	}
+
+	if videoURLFound == "" {
+		return nil, "", fmt.Errorf("no downloadable MP4 URL found")
 	}
 
 	filePath := filepath.Join(downloadsDir, fmt.Sprintf("%d_youtube.mp4", time.Now().UnixNano()))
 	out, err := os.Create(filePath)
 	if err != nil {
-		return nil, "", fmt.Errorf("file creation failed: %v", err)
+		return nil, "", err
 	}
 	defer out.Close()
 
-	resp, err := http.Get(match)
+	resp, err := http.Get(videoURLFound)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to download video: %v", err)
+		return nil, "", fmt.Errorf("download failed: %v", err)
 	}
 	defer resp.Body.Close()
-
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to save video: %v", err)
+		return nil, "", fmt.Errorf("file write failed: %v", err)
 	}
 
 	return []string{filePath}, "video", nil
@@ -268,7 +271,7 @@ func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
 
 // ===========================================================
 //
-//	INSTAGRAM & PINTEREST
+//	INSTAGRAM & PINTEREST (yt-dlp + gallery-dl)
 //
 // ===========================================================
 func downloadInstagram(url, output string, start time.Time) ([]string, string, error) {
@@ -279,18 +282,18 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 Instagram yt-dlp output:\n%s", out)
 	if err != nil {
-		return nil, "", fmt.Errorf("yt-dlp error: %v", err)
+		return nil, "", err
 	}
 
 	files := filesCreatedAfterRecursive(downloadsDir, start)
 	if len(files) == 0 {
-		return nil, "", fmt.Errorf("no files downloaded from Instagram")
+		return nil, "", fmt.Errorf("no files found")
 	}
 
 	mediaType := "image"
 	for _, f := range files {
 		ext := strings.ToLower(filepath.Ext(f))
-		if ext == ".mp4" || ext == ".mov" {
+		if ext == ".mp4" {
 			mediaType = "video"
 			break
 		}
@@ -309,8 +312,7 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 	if err == nil && len(files) > 0 {
 		return files, "video", nil
 	}
-
-	// Fallback: gallery-dl for images
+	// fallback: gallery-dl
 	argsGD := []string{"-d", downloadsDir, url}
 	if fileExists(pinterestFile) {
 		argsGD = []string{"--cookies", pinterestFile, "-d", downloadsDir, url}
@@ -321,13 +323,12 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 	if err != nil || len(files) == 0 {
 		return nil, "", fmt.Errorf("Pinterest download failed: %v", err)
 	}
-
 	return files, "image", nil
 }
 
 // ===========================================================
 //
-//	HELPER FUNCTIONS
+//	HELPERS
 //
 // ===========================================================
 func fileExists(path string) bool {
@@ -337,25 +338,21 @@ func fileExists(path string) bool {
 
 func runCommandCapture(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
-	var combined bytes.Buffer
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
 	err := cmd.Run()
-	return combined.String(), err
+	return buf.String(), err
 }
 
 func filesCreatedAfterRecursive(dir string, t time.Time) []string {
 	var res []string
 	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		if info.ModTime().After(t) {
-			res = append(res, path)
+		if err == nil && !d.IsDir() {
+			info, _ := d.Info()
+			if info.ModTime().After(t) {
+				res = append(res, path)
+			}
 		}
 		return nil
 	})
@@ -378,43 +375,33 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 
 	caption := "@downloaderin123_bot orqali yuklab olindi"
 
-	switch mediaType {
-	case "video":
+	if mediaType == "video" {
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
-		video.ReplyToMessageID = replyTo
 		video.Caption = caption
+		video.ReplyToMessageID = replyTo
 		sentMsg, err = bot.Send(video)
-	case "image":
-		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
-		photo.ReplyToMessageID = replyTo
-		photo.Caption = caption
-		sentMsg, err = bot.Send(photo)
-	default:
-		return fmt.Errorf("unknown media type: %s", mediaType)
+	} else {
+		img := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
+		img.Caption = caption
+		img.ReplyToMessageID = replyTo
+		sentMsg, err = bot.Send(img)
 	}
-
 	if err != nil {
-		return fmt.Errorf("failed to send media: %w", err)
+		return err
 	}
 
 	msgLink := fmt.Sprintf("https://t.me/%s/%d", bot.Self.UserName, sentMsg.MessageID)
 	shareURL := fmt.Sprintf("https://t.me/share/url?url=%s", url.QueryEscape(msgLink))
-
-	btnShare := tgbotapi.NewInlineKeyboardButtonURL("📤 Do'stlar bilan ulashish", shareURL)
+	btnShare := tgbotapi.NewInlineKeyboardButtonURL("📤 Ulashish", shareURL)
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL(
-		"👥 Guruhga qo'shish",
+		"👥 Guruhga qo‘shish",
 		fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
 	)
-
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(btnShare),
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
-
 	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, sentMsg.MessageID, keyboard)
-	if _, err := bot.Send(edit); err != nil {
-		log.Printf("⚠️ Failed to attach keyboard: %v", err)
-	}
-
+	bot.Send(edit)
 	return nil
 }

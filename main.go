@@ -207,41 +207,54 @@ func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
 		return nil, "", fmt.Errorf("RAPIDAPI_KEY not set")
 	}
 
-	// 🧠 Handle YouTube Clips
+	client := &http.Client{}
+
+	// 🧠 Step 1: Handle YouTube Clip
 	if strings.Contains(videoURL, "/clip/") {
-		// Extract video ID pattern: https://youtube.com/clip/<clip_id>
 		resolveURL := fmt.Sprintf("https://yt-api.p.rapidapi.com/resolve?url=%s", url.QueryEscape(videoURL))
 		req, _ := http.NewRequest("GET", resolveURL, nil)
 		req.Header.Add("x-rapidapi-host", "yt-api.p.rapidapi.com")
 		req.Header.Add("x-rapidapi-key", apiKey)
 
-		res, err := http.DefaultClient.Do(req)
+		res, err := client.Do(req)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to resolve clip: %v", err)
 		}
 		defer res.Body.Close()
 
-		var data map[string]interface{}
-		json.NewDecoder(res.Body).Decode(&data)
+		body, _ := io.ReadAll(res.Body)
+		log.Printf("📦 Clip resolve raw JSON: %s", string(body))
 
+		var data map[string]interface{}
+		if err := json.Unmarshal(body, &data); err != nil {
+			return nil, "", fmt.Errorf("resolve JSON parse error: %v", err)
+		}
+
+		// Try multiple possible fields
 		if originalURL, ok := data["videoUrl"].(string); ok && strings.Contains(originalURL, "youtube.com/watch") {
-			log.Printf("🎬 Clip redirected to base video: %s", originalURL)
 			videoURL = originalURL
-		} else {
+		} else if link, ok := data["url"].(string); ok && strings.Contains(link, "youtube.com/watch") {
+			videoURL = link
+		} else if item, ok := data["result"].(map[string]interface{}); ok {
+			if base, ok := item["videoUrl"].(string); ok {
+				videoURL = base
+			}
+		}
+
+		if !strings.Contains(videoURL, "youtube.com/watch") {
 			return nil, "", fmt.Errorf("couldn't resolve clip to original video")
 		}
+
+		log.Printf("🎬 Clip redirected to base video: %s", videoURL)
 	}
 
-	// 🧩 Step 1: Call API
+	// 🧩 Step 2: Resolve actual download link
 	apiEndpoint := fmt.Sprintf("https://yt-api.p.rapidapi.com/resolve?url=%s", url.QueryEscape(videoURL))
-	req, err := http.NewRequest("GET", apiEndpoint, nil)
-	if err != nil {
-		return nil, "", err
-	}
+	req, _ := http.NewRequest("GET", apiEndpoint, nil)
 	req.Header.Add("x-rapidapi-host", "yt-api.p.rapidapi.com")
 	req.Header.Add("x-rapidapi-key", apiKey)
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("API request failed: %v", err)
 	}
@@ -252,13 +265,14 @@ func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
 		return nil, "", fmt.Errorf("API error: %s", string(body))
 	}
 
-	// 🧩 Step 2: Parse JSON
+	body, _ := io.ReadAll(res.Body)
+	log.Printf("📦 YouTube resolve raw JSON: %s", string(body))
+
 	var data map[string]interface{}
-	if err := json.NewDecoder(res.Body).Decode(&data); err != nil {
+	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, "", fmt.Errorf("JSON parse error: %v", err)
 	}
 
-	// 🧩 Step 3: Extract downloadable URL
 	videoURLFound := ""
 	if formats, ok := data["formats"].([]interface{}); ok {
 		for _, f := range formats {
@@ -274,7 +288,7 @@ func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
 		return nil, "", fmt.Errorf("no downloadable MP4 URL found")
 	}
 
-	// 🧩 Step 4: Download file
+	// 🧩 Step 3: Download video
 	filePath := filepath.Join(downloadsDir, fmt.Sprintf("%d_youtube.mp4", time.Now().UnixNano()))
 	out, err := os.Create(filePath)
 	if err != nil {

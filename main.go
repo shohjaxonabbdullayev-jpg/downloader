@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	ffmpegPath = "/usr/bin/ffmpeg"
-	ytDlpPath  = "yt-dlp"
+	ffmpegPath     = "/usr/bin/ffmpeg"
+	ytDlpPath      = "yt-dlp"
+	maxVideoHeight = 480 // max resolution
 )
 
 var (
@@ -29,7 +30,7 @@ var (
 	instagramFile = "instagram.txt"
 	youtubeFile   = "youtube.txt"
 	pinterestFile = "pinterest.txt"
-	sem           = make(chan struct{}, 3)
+	sem           = make(chan struct{}, 3) // limit concurrent downloads
 )
 
 func main() {
@@ -93,15 +94,15 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	chatID := msg.Chat.ID
 
-	if text == "/start" {
+	switch text {
+	case "/start":
 		startMsg := fmt.Sprintf(
 			"👋 Salom %s!\n\n🎥 Menga YouTube, Instagram yoki Pinterest link yuboring — men sizga videoni yoki rasmni yuboraman.",
 			msg.From.FirstName,
 		)
 		bot.Send(tgbotapi.NewMessage(chatID, startMsg))
 		return
-	}
-	if text == "/help" {
+	case "/help":
 		helpMsg := "❓ Yordam kerak bo'lsa @nonfindable1 ga murojaat qiling."
 		bot.Send(tgbotapi.NewMessage(chatID, helpMsg))
 		return
@@ -191,7 +192,7 @@ func downloadYouTube(url, output string, start time.Time) ([]string, string, err
 		"--no-warnings",
 		"--restrict-filenames",
 		"--ffmpeg-location", ffmpegPath,
-		"-f", "bestvideo[height<=720]+bestaudio/best",
+		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best", maxVideoHeight),
 		"--merge-output-format", "mp4",
 		"-o", output,
 		url,
@@ -205,11 +206,8 @@ func downloadYouTube(url, output string, start time.Time) ([]string, string, err
 
 	if strings.Contains(out, "Login required") || strings.Contains(out, "cookies") || strings.Contains(out, "expired") {
 		log.Println("⚠️ YouTube cookies might be expired — please update youtube.txt")
-
 		adminChat := os.Getenv("ADMIN_CHAT_ID")
-		if adminChat == "" {
-			log.Println("ℹ️ No ADMIN_CHAT_ID set, skipping Telegram notification")
-		} else {
+		if adminChat != "" {
 			notifyAdmin(adminChat, "⚠️ YouTube cookies expired! Please update youtube.txt in the server.")
 		}
 	}
@@ -220,10 +218,17 @@ func downloadYouTube(url, output string, start time.Time) ([]string, string, err
 
 // ===================== INSTAGRAM =====================
 func downloadInstagram(url, output string, start time.Time) ([]string, string, error) {
-	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
+	args := []string{
+		"--no-warnings",
+		"--ffmpeg-location", ffmpegPath,
+		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best", maxVideoHeight),
+		"-o", output,
+		url,
+	}
 	if fileExists(instagramFile) {
 		args = append(args, "--cookies", instagramFile)
 	}
+
 	out, err := runCommandCapture(ytDlpPath, args...)
 	log.Printf("🧾 Instagram yt-dlp output:\n%s", out)
 	if err != nil {
@@ -248,18 +253,24 @@ func downloadInstagram(url, output string, start time.Time) ([]string, string, e
 
 // ===================== PINTEREST =====================
 func downloadPinterest(url, output string, start time.Time) ([]string, string, error) {
-	args := []string{"--no-warnings", "--ffmpeg-location", ffmpegPath, "-o", output, url}
+	args := []string{
+		"--no-warnings",
+		"--ffmpeg-location", ffmpegPath,
+		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best", maxVideoHeight),
+		"-o", output,
+		url,
+	}
 	if fileExists(pinterestFile) {
 		args = append(args, "--cookies", pinterestFile)
 	}
+
 	out, err := runCommandCapture(ytDlpPath, args...)
-	log.Printf("🧾 Pinterest yt-dlp output:\n%s", out)
 	files := filesCreatedAfterRecursive(downloadsDir, start)
 	if err == nil && len(files) > 0 {
 		return files, "video", nil
 	}
 
-	// Fallback: gallery-dl for images
+	// Fallback for images via gallery-dl
 	argsGD := []string{"-d", downloadsDir, url}
 	if fileExists(pinterestFile) {
 		argsGD = []string{"--cookies", pinterestFile, "-d", downloadsDir, url}
@@ -269,6 +280,16 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 	files = filesCreatedAfterRecursive(downloadsDir, start)
 	if err != nil || len(files) == 0 {
 		return nil, "", fmt.Errorf("Pinterest download failed: %v", err)
+	}
+
+	// Optional: compress Pinterest videos
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext == ".mp4" || ext == ".mov" {
+			tmp := f + "_tmp.mp4"
+			exec.Command(ffmpegPath, "-i", f, "-vf", fmt.Sprintf("scale=-2:%d", maxVideoHeight), "-c:a", "copy", tmp).Run()
+			os.Rename(tmp, f)
+		}
 	}
 
 	return files, "image", nil
@@ -334,14 +355,13 @@ func notifyAdmin(chatID string, msg string) {
 	bot.Send(tgbotapi.NewMessage(chat, msg))
 }
 
-// ===================== SEND MEDIA WITH SHARE BUTTONS =====================
+// ===================== SEND MEDIA WITH SHARE BUTTONS + DELETE =====================
 func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int, mediaType string) error {
 	var sentMsg tgbotapi.Message
 	var err error
 
 	caption := "@downloaderin123_bot orqali yuklab olindi"
 
-	// 1️⃣ Send media
 	switch mediaType {
 	case "video":
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
@@ -360,7 +380,7 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 		return fmt.Errorf("failed to send media: %w", err)
 	}
 
-	// 2️⃣ Build share & group buttons
+	// Attach share & group buttons
 	msgLink := fmt.Sprintf("https://t.me/%s/%d", bot.Self.UserName, sentMsg.MessageID)
 	shareURL := fmt.Sprintf("https://t.me/share/url?url=%s", url.QueryEscape(msgLink))
 
@@ -378,6 +398,13 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, sentMsg.MessageID, keyboard)
 	if _, err := bot.Send(edit); err != nil {
 		log.Printf("⚠️ Failed to attach keyboard: %v", err)
+	}
+
+	// Delete file after sending
+	if err := os.Remove(filePath); err != nil {
+		log.Printf("⚠️ Failed to delete file %s: %v", filePath, err)
+	} else {
+		log.Printf("🗑️ Deleted file %s after sending", filePath)
 	}
 
 	return nil

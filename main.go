@@ -30,6 +30,9 @@ var (
 	instagramFile = "instagram.txt"
 	youtubeFile   = "youtube.txt"
 	pinterestFile = "pinterest.txt"
+	tiktokFile    = "tiktok.txt"
+	facebookFile  = "facebook.txt"
+	twitterFile   = "twitter.txt"
 	sem           = make(chan struct{}, 3) // limit concurrent downloads
 )
 
@@ -164,7 +167,12 @@ func isSupportedLink(text string) bool {
 		strings.Contains(text, "instagram.com") ||
 		strings.Contains(text, "instagr.am") ||
 		strings.Contains(text, "pinterest.com") ||
-		strings.Contains(text, "pin.it")
+		strings.Contains(text, "pin.it") ||
+		strings.Contains(text, "tiktok.com") ||
+		strings.Contains(text, "facebook.com") ||
+		strings.Contains(text, "fb.watch") ||
+		strings.Contains(text, "twitter.com") ||
+		strings.Contains(text, "x.com")
 }
 
 // ===================== DOWNLOAD MEDIA =====================
@@ -180,6 +188,12 @@ func downloadMedia(url string) ([]string, string, error) {
 		return downloadInstagram(url, outputTemplate, start)
 	case strings.Contains(url, "pinterest.com") || strings.Contains(url, "pin.it"):
 		return downloadPinterest(url, outputTemplate, start)
+	case strings.Contains(url, "tiktok.com"):
+		return downloadTikTok(url, outputTemplate, start)
+	case strings.Contains(url, "facebook.com") || strings.Contains(url, "fb.watch"):
+		return downloadFacebook(url, outputTemplate, start)
+	case strings.Contains(url, "twitter.com") || strings.Contains(url, "x.com"):
+		return downloadTwitter(url, outputTemplate, start)
 	}
 
 	return nil, "", fmt.Errorf("unsupported link")
@@ -293,6 +307,147 @@ func downloadPinterest(url, output string, start time.Time) ([]string, string, e
 	}
 
 	return files, "image", nil
+}
+
+// ===================== TIKTOK =====================
+func downloadTikTok(url, output string, start time.Time) ([]string, string, error) {
+	args := []string{
+		"--no-warnings",
+		"--ffmpeg-location", ffmpegPath,
+		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best", maxVideoHeight),
+		"--merge-output-format", "mp4",
+		"-o", output,
+		url,
+	}
+	if fileExists(tiktokFile) {
+		args = append(args, "--cookies", tiktokFile)
+	}
+
+	out, err := runCommandCapture(ytDlpPath, args...)
+	log.Printf("🧾 TikTok yt-dlp output:\n%s", out)
+	// If yt-dlp succeeded and files exist, return them
+	files := filesCreatedAfterRecursive(downloadsDir, start)
+	if err == nil && len(files) > 0 {
+		mediaType := "video"
+		for _, f := range files {
+			ext := strings.ToLower(filepath.Ext(f))
+			if ext == ".jpg" || ext == ".png" || ext == ".jpeg" || ext == ".webp" {
+				mediaType = "image"
+				break
+			}
+		}
+		return files, mediaType, nil
+	}
+
+	// fallback to gallery-dl for any images (rare for tikTok)
+	argsGD := []string{"-d", downloadsDir, url}
+	if fileExists(tiktokFile) {
+		argsGD = []string{"--cookies", tiktokFile, "-d", downloadsDir, url}
+	}
+	out, err = runCommandCapture("gallery-dl", argsGD...)
+	log.Printf("🖼️ TikTok gallery-dl output:\n%s", out)
+	files = filesCreatedAfterRecursive(downloadsDir, start)
+	if err != nil || len(files) == 0 {
+		return nil, "", fmt.Errorf("TikTok download failed: %v", err)
+	}
+
+	mediaType := "image"
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext == ".mp4" || ext == ".mov" {
+			mediaType = "video"
+			break
+		}
+	}
+	return files, mediaType, nil
+}
+
+// ===================== FACEBOOK =====================
+func downloadFacebook(url, output string, start time.Time) ([]string, string, error) {
+	args := []string{
+		"--no-warnings",
+		"--ffmpeg-location", ffmpegPath,
+		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best", maxVideoHeight),
+		"--merge-output-format", "mp4",
+		"-o", output,
+		url,
+	}
+	if fileExists(facebookFile) {
+		args = append(args, "--cookies", facebookFile)
+	}
+
+	out, err := runCommandCapture(ytDlpPath, args...)
+	log.Printf("🧾 Facebook yt-dlp output:\n%s", out)
+	files := filesCreatedAfterRecursive(downloadsDir, start)
+	if err == nil && len(files) > 0 {
+		return files, "video", nil
+	}
+
+	// Fallback to gallery-dl for images/posts
+	argsGD := []string{"-d", downloadsDir, url}
+	if fileExists(facebookFile) {
+		argsGD = []string{"--cookies", facebookFile, "-d", downloadsDir, url}
+	}
+	out, err = runCommandCapture("gallery-dl", argsGD...)
+	log.Printf("🖼️ Facebook gallery-dl output:\n%s", out)
+	files = filesCreatedAfterRecursive(downloadsDir, start)
+	if err != nil || len(files) == 0 {
+		return nil, "", fmt.Errorf("Facebook download failed: %v", err)
+	}
+
+	mediaType := "image"
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext == ".mp4" || ext == ".mov" {
+			mediaType = "video"
+			break
+		}
+	}
+	return files, mediaType, nil
+}
+
+// ===================== TWITTER =====================
+func downloadTwitter(url, output string, start time.Time) ([]string, string, error) {
+	args := []string{
+		"--no-warnings",
+		"--ffmpeg-location", ffmpegPath,
+		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best", maxVideoHeight),
+		"--merge-output-format", "mp4",
+		"-o", output,
+		url,
+	}
+	if fileExists(twitterFile) {
+		args = append(args, "--cookies", twitterFile)
+	}
+
+	out, err := runCommandCapture(ytDlpPath, args...)
+	log.Printf("🧾 Twitter yt-dlp output:\n%s", out)
+	files := filesCreatedAfterRecursive(downloadsDir, start)
+	if err == nil && len(files) > 0 {
+		return files, "video", nil
+	}
+
+	// Fallback for images via gallery-dl
+	argsGD := []string{"-d", downloadsDir, url}
+	if fileExists(twitterFile) {
+		argsGD = []string{"--cookies", twitterFile, "-d", downloadsDir, url}
+	}
+	out, err = runCommandCapture("gallery-dl", argsGD...)
+	log.Printf("🖼️ Twitter gallery-dl output:\n%s", out)
+	files = filesCreatedAfterRecursive(downloadsDir, start)
+	if err != nil || len(files) == 0 {
+		return nil, "", fmt.Errorf("Twitter download failed: %v", err)
+	}
+
+	mediaType := "image"
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext == ".mp4" || ext == ".mov" {
+			mediaType = "video"
+			break
+		}
+	}
+	return files, mediaType, nil
 }
 
 // ===================== HELPERS =====================

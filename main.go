@@ -186,21 +186,19 @@ func downloadMedia(link string) ([]string, string, error) {
 func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
 	apiKey := os.Getenv("RAPIDAPI_KEY")
 	if apiKey == "" {
-		return nil, "", fmt.Errorf("RAPIDAPI_KEY not set in .env")
+		return nil, "", fmt.Errorf("RAPIDAPI_KEY not set in environment or .env")
 	}
 
 	baseURL := "https://youtube-info-download-api.p.rapidapi.com/ajax/download.php"
 	params := url.Values{}
-	params.Set("format", "mp3") // can also be mp4 if API supports
+	params.Set("format", "mp4") // download video
 	params.Set("add_info", "0")
 	params.Set("url", videoURL)
-	params.Set("audio_quality", "128")
 	params.Set("allow_extended_duration", "false")
 	params.Set("no_merge", "false")
-	params.Set("audio_language", "en")
 
 	reqURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := &http.Client{Timeout: 120 * time.Second}
 	req, _ := http.NewRequest("GET", reqURL, nil)
 	req.Header.Set("x-rapidapi-host", "youtube-info-download-api.p.rapidapi.com")
 	req.Header.Set("x-rapidapi-key", apiKey)
@@ -211,7 +209,7 @@ func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
 	}
 	defer resp.Body.Close()
 
-	filename := fmt.Sprintf("%s/%d_youtube.mp3", downloadsDir, time.Now().Unix())
+	filename := fmt.Sprintf("%s/%d_youtube.mp4", downloadsDir, time.Now().Unix())
 	file, err := os.Create(filename)
 	if err != nil {
 		return nil, "", err
@@ -223,7 +221,7 @@ func downloadYouTubeRapidAPI(videoURL string) ([]string, string, error) {
 		return nil, "", err
 	}
 
-	return []string{filename}, "audio", nil
+	return []string{filename}, "video", nil
 }
 
 // -------------------- INSTAGRAM --------------------
@@ -326,11 +324,6 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 		video.ReplyToMessageID = replyTo
 		video.Caption = caption
 		sentMsg, err = bot.Send(video)
-	case "audio":
-		audio := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(filePath))
-		audio.ReplyToMessageID = replyTo
-		audio.Caption = caption
-		sentMsg, err = bot.Send(audio)
 	case "image":
 		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 		photo.ReplyToMessageID = replyTo
@@ -343,6 +336,7 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 		return err
 	}
 
+	// Attach share buttons
 	msgLink := fmt.Sprintf("https://t.me/%s/%d", bot.Self.UserName, sentMsg.MessageID)
 	shareURL := fmt.Sprintf("https://t.me/share/url?url=%s", url.QueryEscape(msgLink))
 	btnShare := tgbotapi.NewInlineKeyboardButtonURL("📤 Do'stlar bilan ulashish", shareURL)
@@ -351,11 +345,9 @@ func sendMediaAndAttachShareButtons(bot *tgbotapi.BotAPI, chatID int64, filePath
 		tgbotapi.NewInlineKeyboardRow(btnShare),
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
+	_, _ = bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, sentMsg.MessageID, keyboard))
 
-	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, sentMsg.MessageID, keyboard)
-	_, _ = bot.Send(edit)
-
-	// delete file
+	// Delete file after sending
 	_ = os.Remove(filePath)
 	return nil
 }

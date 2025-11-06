@@ -78,7 +78,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube, Instagram, Pinterest, Facebook, TikTok yoki Twitter link yuboring, men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 YouTube, Instagram, Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -144,44 +144,60 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
-	args := []string{"--no-warnings", "--merge-output-format", "mp4", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best", maxVideoHeight), "-o", out, link}
+	args := []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
 
 	// Optional cookie files
-	switch {
-	case strings.Contains(link, "youtube"), strings.Contains(link, "youtu.be"):
+	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
 		if fileExists("youtube.txt") {
 			args = append([]string{"--cookies", "youtube.txt"}, args...)
 		}
-	case strings.Contains(link, "instagram"), strings.Contains(link, "instagr.am"):
+	}
+	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
 		if fileExists("instagram.txt") {
 			args = append([]string{"--cookies", "instagram.txt"}, args...)
 		}
-	case strings.Contains(link, "pinterest"), strings.Contains(link, "pin.it"):
+	}
+	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") {
 		if fileExists("pinterest.txt") {
 			args = append([]string{"--cookies", "pinterest.txt"}, args...)
 		}
-	case strings.Contains(link, "twitter.com"), strings.Contains(link, "x.com"):
+	}
+	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") {
 		if fileExists("twitter.txt") {
 			args = append([]string{"--cookies", "twitter.txt"}, args...)
 		}
-	case strings.Contains(link, "facebook"), strings.Contains(link, "fb.watch"):
+	}
+	if strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
 		if fileExists("facebook.txt") {
 			args = append([]string{"--cookies", "facebook.txt"}, args...)
 		}
 	}
 
+	// Try yt-dlp first
 	_, _ = run(ytDlpPath, args...)
 	files := recentFiles(start)
 	if len(files) > 0 {
+		mediaType := "image"
 		for _, f := range files {
-			if strings.HasSuffix(f, ".mp4") {
-				return files, "video", nil
+			ext := strings.ToLower(filepath.Ext(f))
+			if ext == ".mp4" || ext == ".mov" {
+				mediaType = "video"
+				break
 			}
 		}
-		return files, "image", nil
+		return files, mediaType, nil
 	}
 
-	// Pinterest / Instagram gallery fallback
+	// Fallback: gallery-dl for images (Twitter/X & Facebook)
+	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") || strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
+		run(galleryDlPath, "-d", downloadsDir, link)
+		files = recentFiles(start)
+		if len(files) > 0 {
+			return files, "image", nil
+		}
+	}
+
+	// Pinterest/Instagram gallery fallback
 	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") || strings.Contains(link, "instagram") {
 		run(galleryDlPath, "-d", downloadsDir, link)
 		files = recentFiles(start)

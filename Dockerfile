@@ -47,8 +47,8 @@ WORKDIR /app
 
 # Copy Go binary
 COPY --from=builder /app/downloader-bot .
-
-# Optional cookies and downloads folder
+COPY twitter.txt ./twitter.txt
+COPY facebook.txt ./facebook.txt
 COPY instagram.txt ./instagram.txt
 COPY youtube.txt ./youtube.txt
 COPY pinterest.txt ./pinterest.txt

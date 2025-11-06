@@ -144,33 +144,27 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
-	var args []string
+	args := []string{"--no-warnings", "--merge-output-format", "mp4", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best", maxVideoHeight), "-o", out, link}
 
-	// Build yt-dlp args with cookies if available
-	args = []string{"--no-warnings", "--merge-output-format", "mp4", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best", maxVideoHeight), "-o", out, link}
-
-	// Optional cookies
-	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
+	// Optional cookie files
+	switch {
+	case strings.Contains(link, "youtube"), strings.Contains(link, "youtu.be"):
 		if fileExists("youtube.txt") {
 			args = append([]string{"--cookies", "youtube.txt"}, args...)
 		}
-	}
-	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
+	case strings.Contains(link, "instagram"), strings.Contains(link, "instagr.am"):
 		if fileExists("instagram.txt") {
 			args = append([]string{"--cookies", "instagram.txt"}, args...)
 		}
-	}
-	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") {
+	case strings.Contains(link, "pinterest"), strings.Contains(link, "pin.it"):
 		if fileExists("pinterest.txt") {
 			args = append([]string{"--cookies", "pinterest.txt"}, args...)
 		}
-	}
-	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") {
+	case strings.Contains(link, "twitter.com"), strings.Contains(link, "x.com"):
 		if fileExists("twitter.txt") {
 			args = append([]string{"--cookies", "twitter.txt"}, args...)
 		}
-	}
-	if strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
+	case strings.Contains(link, "facebook"), strings.Contains(link, "fb.watch"):
 		if fileExists("facebook.txt") {
 			args = append([]string{"--cookies", "facebook.txt"}, args...)
 		}
@@ -187,7 +181,7 @@ func download(link string) ([]string, string, error) {
 		return files, "image", nil
 	}
 
-	// Pinterest/Instagram gallery fallback
+	// Pinterest / Instagram gallery fallback
 	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") || strings.Contains(link, "instagram") {
 		run(galleryDlPath, "-d", downloadsDir, link)
 		files = recentFiles(start)
@@ -220,7 +214,7 @@ func recentFiles(since time.Time) []string {
 	return files
 }
 
-// ===================== SEND MEDIA =====================
+// ===================== SEND MEDIA WITH INLINE SHARE =====================
 func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, mediaType string) {
 	caption := "@downloaderin123_bot orqali yuklab olindi"
 
@@ -244,14 +238,15 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		return
 	}
 
-	// Inline buttons: share & add to group
-	share := fmt.Sprintf("https://t.me/share/url?url=%s/%d", bot.Self.UserName, msg.MessageID)
+	// Inline buttons: first row = forward via inline, second row = add bot to group
+	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "") // inline mode
+	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
+
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonURL("📤 Ulashish", share),
-			tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName)),
-		),
+		tgbotapi.NewInlineKeyboardRow(btnShare),
+		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
+
 	bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, keyboard))
 }
 

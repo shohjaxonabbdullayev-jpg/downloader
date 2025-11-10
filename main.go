@@ -146,59 +146,47 @@ func download(link string) ([]string, string, error) {
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
 	args := []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
 
-	// Optional cookie files
-	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
-		if fileExists("youtube.txt") {
-			args = append([]string{"--cookies", "youtube.txt"}, args...)
-		}
+	// Attach cookies if available
+	cookieFiles := map[string]string{
+		"youtube":   "youtube.txt",
+		"instagram": "instagram.txt",
+		"pinterest": "pinterest.txt",
+		"twitter":   "twitter.txt",
+		"facebook":  "facebook.txt",
 	}
-	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
-		if fileExists("instagram.txt") {
-			args = append([]string{"--cookies", "instagram.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") {
-		if fileExists("pinterest.txt") {
-			args = append([]string{"--cookies", "pinterest.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") {
-		if fileExists("twitter.txt") {
-			args = append([]string{"--cookies", "twitter.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
-		if fileExists("facebook.txt") {
-			args = append([]string{"--cookies", "facebook.txt"}, args...)
+
+	for key, file := range cookieFiles {
+		if strings.Contains(strings.ToLower(link), key) && fileExists(file) {
+			args = append([]string{"--cookies", file}, args...)
 		}
 	}
 
-	// Try yt-dlp first
-	_, _ = run(ytDlpPath, args...)
+	// First attempt
+	outStr, _ := run(ytDlpPath, args...)
 	files := recentFiles(start)
 	if len(files) > 0 {
-		mediaType := "image"
-		for _, f := range files {
-			ext := strings.ToLower(filepath.Ext(f))
-			if ext == ".mp4" || ext == ".mov" {
-				mediaType = "video"
-				break
-			}
-		}
-		return files, mediaType, nil
+		return files, detectMediaType(files), nil
 	}
 
-	// Fallback: gallery-dl for images (Twitter/X & Facebook)
-	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") || strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
-		run(galleryDlPath, "-d", downloadsDir, link)
+	// Retry if auth error
+	if isAuthError(outStr) {
+		log.Println("⚠️ Cookies expired. Refreshing...")
+		refreshCookies(link)
+		outStr, _ = run(ytDlpPath, args...)
 		files = recentFiles(start)
 		if len(files) > 0 {
-			return files, "image", nil
+			return files, detectMediaType(files), nil
 		}
 	}
 
-	// Pinterest/Instagram gallery fallback
-	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") || strings.Contains(link, "instagram") {
+	// Fallback to gallery-dl for images
+	if strings.Contains(strings.ToLower(link), "twitter") ||
+		strings.Contains(strings.ToLower(link), "x.com") ||
+		strings.Contains(strings.ToLower(link), "facebook") ||
+		strings.Contains(strings.ToLower(link), "fb.watch") ||
+		strings.Contains(strings.ToLower(link), "pinterest") ||
+		strings.Contains(strings.ToLower(link), "pin.it") ||
+		strings.Contains(strings.ToLower(link), "instagram") {
 		run(galleryDlPath, "-d", downloadsDir, link)
 		files = recentFiles(start)
 		if len(files) > 0 {
@@ -230,7 +218,7 @@ func recentFiles(since time.Time) []string {
 	return files
 }
 
-// ===================== SEND MEDIA WITH INLINE SHARE =====================
+// ===================== SEND MEDIA =====================
 func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, mediaType string) {
 	caption := "@downloaderin123_bot orqali yuklab olindi"
 
@@ -254,8 +242,8 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		return
 	}
 
-	// Inline buttons: first row = forward via inline, second row = add bot to group
-	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "") // inline mode
+	// Inline buttons
+	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "")
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
@@ -270,4 +258,37 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+func detectMediaType(files []string) string {
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext == ".mp4" || ext == ".mov" {
+			return "video"
+		}
+	}
+	return "image"
+}
+
+func isAuthError(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "403") || strings.Contains(lower, "authentication") || strings.Contains(lower, "private")
+}
+
+func refreshCookies(link string) {
+	browser := "chrome" // you can change to "firefox" if needed
+	cookieFiles := map[string]string{
+		"youtube":   "youtube.txt",
+		"instagram": "instagram.txt",
+		"pinterest": "pinterest.txt",
+		"twitter":   "twitter.txt",
+		"facebook":  "facebook.txt",
+	}
+
+	for key, file := range cookieFiles {
+		if strings.Contains(strings.ToLower(link), key) {
+			run(ytDlpPath, "--cookies-from-browser", browser, "--cookies", file, link)
+			log.Printf("✅ Cookies refreshed for %s", key)
+		}
+	}
 }

@@ -143,7 +143,10 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
-	outStr, _ := run(ytDlpPath, buildYtDlpArgs(link, out)...)
+	outStr, err := run(ytDlpPath, buildYtDlpArgs(link, out)...)
+	if err != nil {
+		log.Println("yt-dlp error:", outStr)
+	}
 	files := recentFiles(start)
 	if len(files) > 0 {
 		return files, detectMediaType(files), nil
@@ -151,11 +154,12 @@ func download(link string) ([]string, string, error) {
 
 	// Fallback to gallery-dl for images
 	if isGalleryLink(link) {
-		_, _ = run(galleryDlPath, "-d", downloadsDir, link)
+		outStr, _ := run(galleryDlPath, "-d", downloadsDir, link)
 		files = recentFiles(start)
 		if len(files) > 0 {
 			return files, "image", nil
 		}
+		log.Println("gallery-dl output:", outStr)
 	}
 
 	log.Println("Download failed for link:", link, "yt-dlp output:", outStr)

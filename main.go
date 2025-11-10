@@ -21,7 +21,7 @@ const (
 	ffmpegPath     = "ffmpeg"
 	ytDlpPath      = "yt-dlp"
 	galleryDlPath  = "gallery-dl"
-	maxVideoHeight = 480
+	maxVideoHeight = 720
 )
 
 var (
@@ -144,9 +144,48 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
-	args := []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
+	args := buildYtDlpArgs(link, out)
 
-	// Attach cookies if available
+	outStr, _ := run(ytDlpPath, args...)
+	files := recentFiles(start)
+	if len(files) > 0 {
+		return files, detectMediaType(files), nil
+	}
+
+	// Retry if authentication error
+	if isAuthError(outStr) {
+		log.Println("⚠️ Cookies expired. Refreshing...")
+		refreshCookies(link)
+		args = buildYtDlpArgs(link, out) // rebuild args with refreshed cookies
+		outStr, _ = run(ytDlpPath, args...)
+		files = recentFiles(start)
+		if len(files) > 0 {
+			return files, detectMediaType(files), nil
+		}
+	}
+
+	// Fallback to gallery-dl for images
+	if isGalleryLink(link) {
+		run(galleryDlPath, "-d", downloadsDir, link)
+		files = recentFiles(start)
+		if len(files) > 0 {
+			return files, "image", nil
+		}
+	}
+
+	return nil, "", fmt.Errorf("download failed")
+}
+
+// Build yt-dlp arguments dynamically
+func buildYtDlpArgs(link, out string) []string {
+	args := []string{
+		"--no-warnings",
+		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight),
+		"--merge-output-format", "mp4",
+		"-o", out,
+		link,
+	}
+
 	cookieFiles := map[string]string{
 		"youtube":   "youtube.txt",
 		"instagram": "instagram.txt",
@@ -161,42 +200,10 @@ func download(link string) ([]string, string, error) {
 		}
 	}
 
-	// First attempt
-	outStr, _ := run(ytDlpPath, args...)
-	files := recentFiles(start)
-	if len(files) > 0 {
-		return files, detectMediaType(files), nil
-	}
-
-	// Retry if auth error
-	if isAuthError(outStr) {
-		log.Println("⚠️ Cookies expired. Refreshing...")
-		refreshCookies(link)
-		outStr, _ = run(ytDlpPath, args...)
-		files = recentFiles(start)
-		if len(files) > 0 {
-			return files, detectMediaType(files), nil
-		}
-	}
-
-	// Fallback to gallery-dl for images
-	if strings.Contains(strings.ToLower(link), "twitter") ||
-		strings.Contains(strings.ToLower(link), "x.com") ||
-		strings.Contains(strings.ToLower(link), "facebook") ||
-		strings.Contains(strings.ToLower(link), "fb.watch") ||
-		strings.Contains(strings.ToLower(link), "pinterest") ||
-		strings.Contains(strings.ToLower(link), "pin.it") ||
-		strings.Contains(strings.ToLower(link), "instagram") {
-		run(galleryDlPath, "-d", downloadsDir, link)
-		files = recentFiles(start)
-		if len(files) > 0 {
-			return files, "image", nil
-		}
-	}
-
-	return nil, "", fmt.Errorf("download failed")
+	return args
 }
 
+// ===================== HELPERS =====================
 func run(cmd string, args ...string) (string, error) {
 	c := exec.Command(cmd, args...)
 	var buf bytes.Buffer
@@ -216,6 +223,50 @@ func recentFiles(since time.Time) []string {
 	})
 	sort.Strings(files)
 	return files
+}
+
+func detectMediaType(files []string) string {
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext == ".mp4" || ext == ".mov" {
+			return "video"
+		}
+	}
+	return "image"
+}
+
+func isAuthError(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "403") || strings.Contains(lower, "authentication") || strings.Contains(lower, "private")
+}
+
+func isGalleryLink(link string) bool {
+	lower := strings.ToLower(link)
+	return strings.Contains(lower, "twitter") ||
+		strings.Contains(lower, "x.com") ||
+		strings.Contains(lower, "facebook") ||
+		strings.Contains(lower, "fb.watch") ||
+		strings.Contains(lower, "pinterest") ||
+		strings.Contains(lower, "pin.it") ||
+		strings.Contains(lower, "instagram")
+}
+
+func refreshCookies(link string) {
+	browser := "chrome" // or firefox
+	cookieFiles := map[string]string{
+		"youtube":   "youtube.txt",
+		"instagram": "instagram.txt",
+		"pinterest": "pinterest.txt",
+		"twitter":   "twitter.txt",
+		"facebook":  "facebook.txt",
+	}
+
+	for key, file := range cookieFiles {
+		if strings.Contains(strings.ToLower(link), key) {
+			run(ytDlpPath, "--cookies-from-browser", browser, "--cookies", file, link)
+			log.Printf("✅ Cookies refreshed for %s", key)
+		}
+	}
 }
 
 // ===================== SEND MEDIA =====================
@@ -242,7 +293,6 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		return
 	}
 
-	// Inline buttons
 	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "")
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
 
@@ -254,41 +304,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 	bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, keyboard))
 }
 
-// ===================== HELPERS =====================
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
-}
-
-func detectMediaType(files []string) string {
-	for _, f := range files {
-		ext := strings.ToLower(filepath.Ext(f))
-		if ext == ".mp4" || ext == ".mov" {
-			return "video"
-		}
-	}
-	return "image"
-}
-
-func isAuthError(output string) bool {
-	lower := strings.ToLower(output)
-	return strings.Contains(lower, "403") || strings.Contains(lower, "authentication") || strings.Contains(lower, "private")
-}
-
-func refreshCookies(link string) {
-	browser := "chrome" // you can change to "firefox" if needed
-	cookieFiles := map[string]string{
-		"youtube":   "youtube.txt",
-		"instagram": "instagram.txt",
-		"pinterest": "pinterest.txt",
-		"twitter":   "twitter.txt",
-		"facebook":  "facebook.txt",
-	}
-
-	for key, file := range cookieFiles {
-		if strings.Contains(strings.ToLower(link), key) {
-			run(ytDlpPath, "--cookies-from-browser", browser, "--cookies", file, link)
-			log.Printf("✅ Cookies refreshed for %s", key)
-		}
-	}
 }

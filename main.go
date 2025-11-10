@@ -20,7 +20,6 @@ import (
 )
 
 const (
-	ffmpegPath     = "ffmpeg"
 	ytDlpPath      = "yt-dlp"
 	maxVideoHeight = 480
 )
@@ -31,9 +30,9 @@ var (
 )
 
 const (
-	rapidAPIInstagramKey = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
-	downweeAPIKey        = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
-	universalAPIKey      = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
+	instagramAPIKey = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
+	downweeAPIKey   = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
+	universalAPIKey = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
 )
 
 // ===================== MAIN =====================
@@ -86,7 +85,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube, Instagram, Pinterest, TikTok, Facebook yoki Twitter/X link yuboring — men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 YouTube, Instagram, TikTok, Facebook yoki Twitter/X link yuboring — men videoni yoki rasmni yuboraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -138,8 +137,6 @@ func isSupported(u string) bool {
 		strings.Contains(u, "youtu.be") ||
 		strings.Contains(u, "instagram") ||
 		strings.Contains(u, "instagr.am") ||
-		strings.Contains(u, "pinterest") ||
-		strings.Contains(u, "pin.it") ||
 		strings.Contains(u, "tiktok") ||
 		strings.Contains(u, "facebook") ||
 		strings.Contains(u, "fb.watch") ||
@@ -151,9 +148,26 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 
-	// Instagram / Facebook via DownWee
+	// Instagram via new RapidAPI
+	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
+		files, err := fetchInstagramMedia(link)
+		if err == nil && len(files) > 0 {
+			// Check if the media is video
+			mediaType := "image"
+			for _, f := range files {
+				ext := strings.ToLower(filepath.Ext(f))
+				if ext == ".mp4" || ext == ".mov" {
+					mediaType = "video"
+					break
+				}
+			}
+			return files, mediaType, nil
+		}
+	}
+
+	// Facebook / Instagram Reels via DownWee
 	if strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") ||
-		(strings.Contains(link, "instagram") && (strings.Contains(link, "/reel/") || strings.Contains(link, "/p/") || strings.Contains(link, "/stories/"))) {
+		(strings.Contains(link, "instagram") && strings.Contains(link, "/reel/")) {
 		file, err := fetchDownweeVideo(link)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to download video: %v", err)
@@ -161,16 +175,16 @@ func download(link string) ([]string, string, error) {
 		return []string{file}, "video", nil
 	}
 
-	// Twitter / X via Universal Social Media Downloader API
-	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") {
-		file, mediaType, err := fetchTwitterMedia(link)
+	// TikTok / Twitter/X via Universal API
+	if strings.Contains(link, "tiktok.com") || strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") {
+		file, mediaType, err := fetchUniversalMedia(link)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to download Twitter/X media: %v", err)
+			return nil, "", fmt.Errorf("failed to download media: %v", err)
 		}
 		return []string{file}, mediaType, nil
 	}
 
-	// YouTube / TikTok fallback via yt-dlp
+	// YouTube fallback
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
 	args := []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
 	_, _ = run(ytDlpPath, args...)
@@ -217,6 +231,38 @@ func downloadFile(url, path string) error {
 	}
 
 	return os.WriteFile(path, data, 0644)
+}
+
+// ===================== INSTAGRAM =====================
+func fetchInstagramMedia(url string) ([]string, error) {
+	apiURL := "https://instagram-downloader38.p.rapidapi.com/download?audio=false&wait_ms=5000&json=false&url=" + url
+	req, _ := http.NewRequest("GET", apiURL, nil)
+	req.Header.Set("x-rapidapi-host", "instagram-downloader38.p.rapidapi.com")
+	req.Header.Set("x-rapidapi-key", instagramAPIKey)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		URL []string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var files []string
+	for _, u := range result.URL {
+		filename := filepath.Join(downloadsDir, filepath.Base(u))
+		if err := downloadFile(u, filename); err != nil {
+			continue
+		}
+		files = append(files, filename)
+	}
+	return files, nil
 }
 
 // ===================== DOWNWEE =====================
@@ -274,11 +320,18 @@ func fetchDownweeVideo(url string) (string, error) {
 	return filename, nil
 }
 
-// ===================== TWITTER / X =====================
-func fetchTwitterMedia(url string) (string, string, error) {
-	apiURL := fmt.Sprintf("https://universal-social-media-content-downloader-api.p.rapidapi.com/download?url=%s", url)
+// ===================== UNIVERSAL API =====================
+func fetchUniversalMedia(link string) (string, string, error) {
+	apiURL := "https://universal-social-media-content-downloader-api.p.rapidapi.com/download"
+	payload := map[string]string{
+		"url":     link,
+		"format":  "mp4",
+		"quality": "high",
+	}
+	data, _ := json.Marshal(payload)
 
-	req, _ := http.NewRequest("GET", apiURL, nil)
+	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(data))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-rapidapi-host", "universal-social-media-content-downloader-api.p.rapidapi.com")
 	req.Header.Set("x-rapidapi-key", universalAPIKey)
 
@@ -295,7 +348,6 @@ func fetchTwitterMedia(url string) (string, string, error) {
 			ImageURL string `json:"imageUrl,omitempty"`
 		} `json:"data"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", "", err
 	}

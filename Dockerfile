@@ -24,7 +24,7 @@ RUN go build -o downloader-bot .
 # ==============================
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
+# Install runtime dependencies including Chromium
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -33,7 +33,28 @@ RUN apt-get update && \
         ca-certificates \
         curl \
         wget \
-        git && \
+        git \
+        chromium \
+        chromium-driver \
+        fonts-liberation \
+        libnss3 \
+        libx11-xcb1 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxi6 \
+        libxrandr2 \
+        libasound2 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdrm2 \
+        libgbm1 \
+        libgtk-3-0 \
+        libpangocairo-1.0-0 \
+        libxshmfence1 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ✅ Install Python packages yt-dlp and gallery-dl in isolated venv
@@ -45,16 +66,18 @@ RUN python3 -m venv /opt/yt && \
 # Create app directory
 WORKDIR /app
 
-# Copy Go binary
-COPY --from=builder /app/downloader-bot .
+# Copy Go binary and cookie files
+COPY --from=builder /app/downloader-bot ./
 COPY twitter.txt ./twitter.txt
 COPY facebook.txt ./facebook.txt
 COPY instagram.txt ./instagram.txt
 COPY youtube.txt ./youtube.txt
 COPY pinterest.txt ./pinterest.txt
-RUN mkdir -p downloads
 
-# Environment variables
+# Create necessary directories
+RUN mkdir -p downloads chrome-data
+
+# Expose port
 ENV PORT=10000
 EXPOSE 10000
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
@@ -22,11 +23,13 @@ import (
 const (
 	ytDlpPath      = "yt-dlp"
 	maxVideoHeight = 720
+	cookieFile     = "youtube.txt"
 )
 
 var (
 	downloadsDir = "downloads"
 	sem          = make(chan struct{}, 3) // concurrency limit
+	profileDir   = "./chrome-data"        // persistent Chrome profile
 )
 
 func main() {
@@ -34,7 +37,7 @@ func main() {
 
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
-		log.Fatal("❌ BOT_TOKEN missing")
+		log.Fatal("BOT_TOKEN missing")
 	}
 
 	port := os.Getenv("PORT")
@@ -43,6 +46,7 @@ func main() {
 	}
 
 	os.MkdirAll(downloadsDir, 0755)
+	os.MkdirAll(profileDir, 0755)
 
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
@@ -50,13 +54,12 @@ func main() {
 	}
 	log.Printf("🤖 Bot running as @%s", bot.Self.UserName)
 
-	// Health check
+	// Health check server
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprint(w, "OK")
 		})
-		log.Printf("💚 Health check server running on port %s", port)
 		log.Fatal(http.ListenAndServe(":"+port, nil))
 	}()
 
@@ -78,7 +81,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube link yuboring — men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 YouTube link yuboring — men videoni yuklab beraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -100,7 +103,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: waitMsg.MessageID})
 
 			if err != nil || len(files) == 0 {
-				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Linkni tekshiring."))
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi: "+err.Error()))
 				return
 			}
 
@@ -118,7 +121,10 @@ func extractLinks(text string) []string {
 	raw := re.FindAllString(text, -1)
 	var out []string
 	for _, u := range raw {
-		if strings.Contains(u, "youtube") || strings.Contains(u, "youtu.be") {
+		u = strings.ToLower(u)
+		if strings.Contains(u, "youtube") || strings.Contains(u, "youtu.be") ||
+			strings.Contains(u, "instagram") || strings.Contains(u, "tiktok") ||
+			strings.Contains(u, "facebook") || strings.Contains(u, "twitter") {
 			out = append(out, u)
 		}
 	}
@@ -129,50 +135,107 @@ func extractLinks(text string) []string {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 
-	// Step 1: Use headless Chrome to get the actual YouTube video URL
-	videoURL, err := getYouTubeDirectURL(link)
-	if err != nil {
-		log.Println("Headless Chrome error:", err)
-		return nil, "", fmt.Errorf("failed to get video URL")
+	// Ensure youtube cookies exist if it's a YouTube link
+	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
+		if !fileExists(cookieFile) || fileOlderThan(cookieFile, 24*time.Hour) {
+			log.Println("✅ Exporting cookies from Chromium profile")
+			if err := exportCookiesFromProfile(profileDir, cookieFile); err != nil {
+				log.Println("❌ Failed to export cookies:", err)
+			}
+		}
 	}
 
-	// Step 2: Download using yt-dlp
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
 	args := []string{
 		"--no-warnings",
 		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight),
 		"--merge-output-format", "mp4",
 		"-o", out,
-		videoURL,
+		link,
 	}
 
-	outStr, _ := run(ytDlpPath, args...)
+	// Add cookies if it's YouTube
+	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
+		args = append([]string{"--cookies", cookieFile}, args...)
+	}
+
+	outStr, err := run(ytDlpPath, args...)
+	if err != nil {
+		log.Println("yt-dlp failed:", err)
+		log.Println("yt-dlp output:", outStr)
+	}
+
 	files := recentFiles(start)
 	if len(files) > 0 {
 		return files, detectMediaType(files), nil
 	}
 
-	log.Println("Download failed, yt-dlp output:", outStr)
-	return nil, "", fmt.Errorf("download failed")
+	return nil, "", fmt.Errorf("download failed; yt-dlp: %v", err)
 }
 
-// ===================== HEADLESS BROWSER =====================
-func getYouTubeDirectURL(link string) (string, error) {
-	ctx, cancel := chromedp.NewContext(context.Background())
+// exportCookiesFromProfile reads cookies from persistent Chromium and writes to cookies.txt
+func exportCookiesFromProfile(profileDir, path string) error {
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.UserDataDir(profileDir), // persistent profile
+	)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancelAlloc()
+	ctx, cancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
+	defer cancel()
+	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	var videoURL string
-	err := chromedp.Run(ctx,
-		chromedp.Navigate(link),
-		chromedp.AttributeValue(`video`, "src", &videoURL, nil),
-	)
-
-	if err != nil || videoURL == "" {
-		// fallback: yt-dlp can handle public videos directly
-		return link, nil
+	// Navigate to YouTube to load session
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate("https://www.youtube.com/"),
+		chromedp.Sleep(2*time.Second),
+	); err != nil {
+		return err
 	}
 
-	return videoURL, nil
+	cookies, err := network.GetCookies().Do(ctx)
+	if err != nil {
+		return err
+	}
+
+	return writeNetscapeCookies(path, cookies)
+}
+
+// writeNetscapeCookies writes cookies in a format usable by yt-dlp
+func writeNetscapeCookies(path string, cookies []*network.Cookie) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "# Netscape HTTP Cookie File")
+	for _, c := range cookies {
+		domain := c.Domain
+		if !strings.HasPrefix(domain, ".") {
+			domain = "." + domain
+		}
+		flag := "FALSE"
+		if strings.HasPrefix(c.Domain, ".") {
+			flag = "TRUE"
+		}
+		secure := "FALSE"
+		if c.Secure {
+			secure = "TRUE"
+		}
+		exp := int64(c.Expires)
+		if exp == 0 {
+			exp = time.Now().Add(7 * 24 * time.Hour).Unix()
+		}
+		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%d\t%s\t%s",
+			domain, flag, c.Path, secure, exp, c.Name, c.Value)
+		fmt.Fprintln(f, line)
+	}
+	return nil
 }
 
 // ===================== HELPERS =====================
@@ -207,13 +270,10 @@ func detectMediaType(files []string) string {
 	return "image"
 }
 
-// ===================== SEND MEDIA =====================
 func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, mediaType string) {
 	caption := "@downloaderin123_bot orqali yuklab olindi"
-
 	var msg tgbotapi.Message
 	var err error
-
 	if mediaType == "video" {
 		v := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(file))
 		v.Caption = caption
@@ -225,7 +285,6 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		p.ReplyToMessageID = replyTo
 		msg, err = bot.Send(p)
 	}
-
 	if err != nil {
 		log.Println("Send error:", err)
 		return
@@ -233,11 +292,22 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 
 	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "")
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
-
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(btnShare),
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
-
 	bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, keyboard))
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func fileOlderThan(path string, d time.Duration) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return true
+	}
+	return time.Since(info.ModTime()) > d
 }

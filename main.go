@@ -28,8 +28,8 @@ const (
 
 var (
 	downloadsDir = "downloads"
-	sem          = make(chan struct{}, 3) // concurrency limit
-	profileDir   = "./chrome-data"        // persistent Chrome profile
+	sem          = make(chan struct{}, 3)
+	profileDir   = "./chrome-data"
 )
 
 func main() {
@@ -54,7 +54,7 @@ func main() {
 	}
 	log.Printf("🤖 Bot running as @%s", bot.Self.UserName)
 
-	// Health check server
+	// Health check
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -99,7 +99,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := download(l)
 			<-sem
 
-			// Delete loading message
 			bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: waitMsg.MessageID})
 
 			if err != nil || len(files) == 0 {
@@ -135,7 +134,7 @@ func extractLinks(text string) []string {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 
-	// Ensure youtube cookies exist if it's a YouTube link
+	// Ensure youtube cookies exist
 	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
 		if !fileExists(cookieFile) || fileOlderThan(cookieFile, 24*time.Hour) {
 			log.Println("✅ Exporting cookies from Chromium profile")
@@ -148,13 +147,13 @@ func download(link string) ([]string, string, error) {
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
 	args := []string{
 		"--no-warnings",
+		"--geo-bypass", // ✅ bypass region restrictions
 		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight),
 		"--merge-output-format", "mp4",
 		"-o", out,
 		link,
 	}
 
-	// Add cookies if it's YouTube
 	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
 		args = append([]string{"--cookies", cookieFile}, args...)
 	}
@@ -173,14 +172,14 @@ func download(link string) ([]string, string, error) {
 	return nil, "", fmt.Errorf("download failed; yt-dlp: %v", err)
 }
 
-// exportCookiesFromProfile reads cookies from persistent Chromium and writes to cookies.txt
+// ===================== EXPORT COOKIES =====================
 func exportCookiesFromProfile(profileDir, path string) error {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.UserDataDir(profileDir), // persistent profile
+		chromedp.UserDataDir(profileDir),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer cancelAlloc()
@@ -189,7 +188,7 @@ func exportCookiesFromProfile(profileDir, path string) error {
 	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// Navigate to YouTube to load session
+	// Navigate YouTube to load session
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate("https://www.youtube.com/"),
 		chromedp.Sleep(2*time.Second),
@@ -197,15 +196,19 @@ func exportCookiesFromProfile(profileDir, path string) error {
 		return err
 	}
 
+	// Enable network and get cookies
+	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+		return fmt.Errorf("network.Enable failed: %w", err)
+	}
 	cookies, err := network.GetCookies().Do(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("network.GetAllCookies failed: %w", err)
 	}
 
 	return writeNetscapeCookies(path, cookies)
 }
 
-// writeNetscapeCookies writes cookies in a format usable by yt-dlp
+// write cookies in Netscape format for yt-dlp
 func writeNetscapeCookies(path string, cookies []*network.Cookie) error {
 	f, err := os.Create(path)
 	if err != nil {

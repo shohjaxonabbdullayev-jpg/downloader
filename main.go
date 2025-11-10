@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -20,7 +23,6 @@ import (
 const (
 	ffmpegPath     = "ffmpeg"
 	ytDlpPath      = "yt-dlp"
-	galleryDlPath  = "gallery-dl"
 	maxVideoHeight = 480
 )
 
@@ -29,6 +31,12 @@ var (
 	sem          = make(chan struct{}, 3) // concurrency limit
 )
 
+const (
+	rapidAPIInstagramKey = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
+	downweeAPIKey        = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
+)
+
+// ===================== MAIN =====================
 func main() {
 	_ = godotenv.Load()
 
@@ -96,7 +104,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := download(l)
 			<-sem
 
-			// Delete loading message
 			bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: waitMsg.MessageID})
 
 			if err != nil || len(files) == 0 {
@@ -143,72 +150,50 @@ func isSupported(u string) bool {
 // ===================== DOWNLOAD =====================
 func download(link string) ([]string, string, error) {
 	start := time.Now()
+
+	// Instagram via RapidAPI
+	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
+		username := extractInstagramUsername(link)
+		posts, err := fetchInstagram(username)
+		if err != nil || len(posts) == 0 {
+			return nil, "", fmt.Errorf("failed to fetch Instagram posts")
+		}
+
+		var files []string
+		for _, post := range posts {
+			file := filepath.Join(downloadsDir, filepath.Base(post.MediaURL))
+			if err := downloadFile(post.MediaURL, file); err != nil {
+				continue
+			}
+			files = append(files, file)
+		}
+		return files, "image", nil
+	}
+
+	// Facebook / Instagram Reels via DownWee
+	if strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") || strings.Contains(link, "instagram") && strings.Contains(link, "/reel/") {
+		file, err := fetchDownweeVideo(link)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to download video: %v", err)
+		}
+		return []string{file}, "video", nil
+	}
+
+	// YouTube / TikTok
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
 	args := []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
-
-	// Optional cookie files
-	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
-		if fileExists("youtube.txt") {
-			args = append([]string{"--cookies", "youtube.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
-		if fileExists("instagram.txt") {
-			args = append([]string{"--cookies", "instagram.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") {
-		if fileExists("pinterest.txt") {
-			args = append([]string{"--cookies", "pinterest.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") {
-		if fileExists("twitter.txt") {
-			args = append([]string{"--cookies", "twitter.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
-		if fileExists("facebook.txt") {
-			args = append([]string{"--cookies", "facebook.txt"}, args...)
-		}
-	}
-
-	// Try yt-dlp first
 	_, _ = run(ytDlpPath, args...)
 	files := recentFiles(start)
 	if len(files) > 0 {
-		mediaType := "image"
-		for _, f := range files {
-			ext := strings.ToLower(filepath.Ext(f))
-			if ext == ".mp4" || ext == ".mov" {
-				mediaType = "video"
-				break
-			}
-		}
-		return files, mediaType, nil
-	}
-
-	// Fallback: gallery-dl for images (Twitter/X & Facebook)
-	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") || strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
-		run(galleryDlPath, "-d", downloadsDir, link)
-		files = recentFiles(start)
-		if len(files) > 0 {
-			return files, "image", nil
-		}
-	}
-
-	// Pinterest/Instagram gallery fallback
-	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") || strings.Contains(link, "instagram") {
-		run(galleryDlPath, "-d", downloadsDir, link)
-		files = recentFiles(start)
-		if len(files) > 0 {
-			return files, "image", nil
-		}
+		return files, "video", nil
 	}
 
 	return nil, "", fmt.Errorf("download failed")
 }
 
+// ===================== HELPERS =====================
+
+// Run command
 func run(cmd string, args ...string) (string, error) {
 	c := exec.Command(cmd, args...)
 	var buf bytes.Buffer
@@ -218,6 +203,7 @@ func run(cmd string, args ...string) (string, error) {
 	return buf.String(), err
 }
 
+// List files recently created
 func recentFiles(since time.Time) []string {
 	var files []string
 	filepath.Walk(downloadsDir, func(p string, info os.FileInfo, _ error) error {
@@ -230,7 +216,120 @@ func recentFiles(since time.Time) []string {
 	return files
 }
 
-// ===================== SEND MEDIA WITH INLINE SHARE =====================
+// Download file from URL
+func downloadFile(url, path string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	return ioutil.WriteFile(path, data, 0644)
+}
+
+// ===================== INSTAGRAM =====================
+type InstagramPost struct {
+	MediaURL string `json:"mediaUrl"`
+	IsVideo  bool   `json:"isVideo"`
+}
+
+func fetchInstagram(username string) ([]InstagramPost, error) {
+	url := "https://instagram120.p.rapidapi.com/api/instagram/posts"
+	payload := map[string]string{"username": username, "maxId": ""}
+	data, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-rapidapi-host", "instagram120.p.rapidapi.com")
+	req.Header.Set("x-rapidapi-key", rapidAPIInstagramKey)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Posts []InstagramPost `json:"posts"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+
+	return result.Posts, nil
+}
+
+func extractInstagramUsername(url string) string {
+	parts := strings.Split(strings.Trim(url, "/"), "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return ""
+}
+
+// ===================== DOWNWEE =====================
+type DownweeResponse struct {
+	Data struct {
+		Title    string `json:"title"`
+		VideoURL string `json:"videoUrl"`
+	} `json:"data"`
+}
+
+func fetchDownweeVideo(url string) (string, error) {
+	apiURL := "https://downwee-video-downloader.p.rapidapi.com/download"
+	payload := map[string]string{"url": url}
+	data, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(data))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-rapidapi-host", "downwee-video-downloader.p.rapidapi.com")
+	req.Header.Set("x-rapidapi-key", downweeAPIKey)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result DownweeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	if result.Data.VideoURL == "" {
+		return "", fmt.Errorf("video URL not found")
+	}
+
+	filename := filepath.Join(downloadsDir, filepath.Base(result.Data.VideoURL))
+	out, err := os.Create(filename)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+
+	resp2, err := http.Get(result.Data.VideoURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp2.Body.Close()
+
+	_, err = io.Copy(out, resp2.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return filename, nil
+}
+
+// ===================== SEND MEDIA =====================
 func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, mediaType string) {
 	caption := "@downloaderin123_bot orqali yuklab olindi"
 
@@ -254,8 +353,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		return
 	}
 
-	// Inline buttons: first row = forward via inline, second row = add bot to group
-	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "") // inline mode
+	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "")
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
@@ -264,10 +362,4 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 	)
 
 	bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, keyboard))
-}
-
-// ===================== HELPERS =====================
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -34,6 +33,7 @@ var (
 const (
 	rapidAPIInstagramKey = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
 	downweeAPIKey        = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
+	universalAPIKey      = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
 )
 
 // ===================== MAIN =====================
@@ -86,7 +86,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube, Instagram, Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 YouTube, Instagram, Pinterest, TikTok, Facebook yoki Twitter/X link yuboring — men videoni yoki rasmni yuboraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -151,27 +151,9 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 
-	// Instagram via RapidAPI
-	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
-		username := extractInstagramUsername(link)
-		posts, err := fetchInstagram(username)
-		if err != nil || len(posts) == 0 {
-			return nil, "", fmt.Errorf("failed to fetch Instagram posts")
-		}
-
-		var files []string
-		for _, post := range posts {
-			file := filepath.Join(downloadsDir, filepath.Base(post.MediaURL))
-			if err := downloadFile(post.MediaURL, file); err != nil {
-				continue
-			}
-			files = append(files, file)
-		}
-		return files, "image", nil
-	}
-
-	// Facebook / Instagram Reels via DownWee
-	if strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") || strings.Contains(link, "instagram") && strings.Contains(link, "/reel/") {
+	// Instagram / Facebook via DownWee
+	if strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") ||
+		(strings.Contains(link, "instagram") && (strings.Contains(link, "/reel/") || strings.Contains(link, "/p/") || strings.Contains(link, "/stories/"))) {
 		file, err := fetchDownweeVideo(link)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to download video: %v", err)
@@ -179,7 +161,16 @@ func download(link string) ([]string, string, error) {
 		return []string{file}, "video", nil
 	}
 
-	// YouTube / TikTok
+	// Twitter / X via Universal Social Media Downloader API
+	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") {
+		file, mediaType, err := fetchTwitterMedia(link)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to download Twitter/X media: %v", err)
+		}
+		return []string{file}, mediaType, nil
+	}
+
+	// YouTube / TikTok fallback via yt-dlp
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
 	args := []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
 	_, _ = run(ytDlpPath, args...)
@@ -192,8 +183,6 @@ func download(link string) ([]string, string, error) {
 }
 
 // ===================== HELPERS =====================
-
-// Run command
 func run(cmd string, args ...string) (string, error) {
 	c := exec.Command(cmd, args...)
 	var buf bytes.Buffer
@@ -203,7 +192,6 @@ func run(cmd string, args ...string) (string, error) {
 	return buf.String(), err
 }
 
-// List files recently created
 func recentFiles(since time.Time) []string {
 	var files []string
 	filepath.Walk(downloadsDir, func(p string, info os.FileInfo, _ error) error {
@@ -216,7 +204,6 @@ func recentFiles(since time.Time) []string {
 	return files
 }
 
-// Download file from URL
 func downloadFile(url, path string) error {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -229,49 +216,7 @@ func downloadFile(url, path string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(path, data, 0644)
-}
-
-// ===================== INSTAGRAM =====================
-type InstagramPost struct {
-	MediaURL string `json:"mediaUrl"`
-	IsVideo  bool   `json:"isVideo"`
-}
-
-func fetchInstagram(username string) ([]InstagramPost, error) {
-	url := "https://instagram120.p.rapidapi.com/api/instagram/posts"
-	payload := map[string]string{"username": username, "maxId": ""}
-	data, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(data))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-rapidapi-host", "instagram120.p.rapidapi.com")
-	req.Header.Set("x-rapidapi-key", rapidAPIInstagramKey)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Posts []InstagramPost `json:"posts"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
-	}
-
-	return result.Posts, nil
-}
-
-func extractInstagramUsername(url string) string {
-	parts := strings.Split(strings.Trim(url, "/"), "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
-	}
-	return ""
+	return os.WriteFile(path, data, 0644)
 }
 
 // ===================== DOWNWEE =====================
@@ -327,6 +272,64 @@ func fetchDownweeVideo(url string) (string, error) {
 	}
 
 	return filename, nil
+}
+
+// ===================== TWITTER / X =====================
+func fetchTwitterMedia(url string) (string, string, error) {
+	apiURL := fmt.Sprintf("https://universal-social-media-content-downloader-api.p.rapidapi.com/download?url=%s", url)
+
+	req, _ := http.NewRequest("GET", apiURL, nil)
+	req.Header.Set("x-rapidapi-host", "universal-social-media-content-downloader-api.p.rapidapi.com")
+	req.Header.Set("x-rapidapi-key", universalAPIKey)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Data struct {
+			VideoURL string `json:"videoUrl,omitempty"`
+			ImageURL string `json:"imageUrl,omitempty"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", err
+	}
+
+	var mediaURL, mediaType string
+	if result.Data.VideoURL != "" {
+		mediaURL = result.Data.VideoURL
+		mediaType = "video"
+	} else if result.Data.ImageURL != "" {
+		mediaURL = result.Data.ImageURL
+		mediaType = "image"
+	} else {
+		return "", "", fmt.Errorf("no media URL found")
+	}
+
+	filename := filepath.Join(downloadsDir, filepath.Base(mediaURL))
+	out, err := os.Create(filename)
+	if err != nil {
+		return "", "", err
+	}
+	defer out.Close()
+
+	resp2, err := http.Get(mediaURL)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp2.Body.Close()
+
+	_, err = io.Copy(out, resp2.Body)
+	if err != nil {
+		return "", "", err
+	}
+
+	return filename, mediaType, nil
 }
 
 // ===================== SEND MEDIA =====================

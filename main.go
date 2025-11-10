@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,13 +14,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/chromedp"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
 )
 
 const (
 	ytDlpPath      = "yt-dlp"
-	galleryDlPath  = "gallery-dl"
 	maxVideoHeight = 720
 )
 
@@ -77,7 +78,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube, Instagram, Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 YouTube link yuboring — men videoni yoki rasmni yuboraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -117,80 +118,61 @@ func extractLinks(text string) []string {
 	raw := re.FindAllString(text, -1)
 	var out []string
 	for _, u := range raw {
-		if isSupported(u) {
+		if strings.Contains(u, "youtube") || strings.Contains(u, "youtu.be") {
 			out = append(out, u)
 		}
 	}
 	return out
 }
 
-func isSupported(u string) bool {
-	u = strings.ToLower(u)
-	return strings.Contains(u, "youtube") ||
-		strings.Contains(u, "youtu.be") ||
-		strings.Contains(u, "instagram") ||
-		strings.Contains(u, "instagr.am") ||
-		strings.Contains(u, "pinterest") ||
-		strings.Contains(u, "pin.it") ||
-		strings.Contains(u, "tiktok") ||
-		strings.Contains(u, "facebook") ||
-		strings.Contains(u, "fb.watch") ||
-		strings.Contains(u, "twitter.com") ||
-		strings.Contains(u, "x.com")
-}
-
 // ===================== DOWNLOAD =====================
 func download(link string) ([]string, string, error) {
 	start := time.Now()
-	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
-	outStr, err := run(ytDlpPath, buildYtDlpArgs(link, out)...)
+
+	// Step 1: Use headless Chrome to get the actual YouTube video URL
+	videoURL, err := getYouTubeDirectURL(link)
 	if err != nil {
-		log.Println("yt-dlp error:", outStr)
-	}
-	files := recentFiles(start)
-	if len(files) > 0 {
-		return files, detectMediaType(files), nil
+		log.Println("Headless Chrome error:", err)
+		return nil, "", fmt.Errorf("failed to get video URL")
 	}
 
-	// Fallback to gallery-dl for images
-	if isGalleryLink(link) {
-		outStr, _ := run(galleryDlPath, "-d", downloadsDir, link)
-		files = recentFiles(start)
-		if len(files) > 0 {
-			return files, "image", nil
-		}
-		log.Println("gallery-dl output:", outStr)
-	}
-
-	log.Println("Download failed for link:", link, "yt-dlp output:", outStr)
-	return nil, "", fmt.Errorf("download failed")
-}
-
-// Build yt-dlp arguments using manual cookies
-func buildYtDlpArgs(link, out string) []string {
+	// Step 2: Download using yt-dlp
+	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
 	args := []string{
 		"--no-warnings",
 		"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight),
 		"--merge-output-format", "mp4",
 		"-o", out,
-		link,
+		videoURL,
 	}
 
-	cookieFiles := map[string]string{
-		"youtube":   "youtube.txt",
-		"instagram": "instagram.txt",
-		"pinterest": "pinterest.txt",
-		"twitter":   "twitter.txt",
-		"facebook":  "facebook.txt",
+	outStr, _ := run(ytDlpPath, args...)
+	files := recentFiles(start)
+	if len(files) > 0 {
+		return files, detectMediaType(files), nil
 	}
 
-	for key, file := range cookieFiles {
-		if strings.Contains(strings.ToLower(link), key) && fileExists(file) {
-			args = append([]string{"--cookies", file}, args...)
-		}
+	log.Println("Download failed, yt-dlp output:", outStr)
+	return nil, "", fmt.Errorf("download failed")
+}
+
+// ===================== HEADLESS BROWSER =====================
+func getYouTubeDirectURL(link string) (string, error) {
+	ctx, cancel := chromedp.NewContext(context.Background())
+	defer cancel()
+
+	var videoURL string
+	err := chromedp.Run(ctx,
+		chromedp.Navigate(link),
+		chromedp.AttributeValue(`video`, "src", &videoURL, nil),
+	)
+
+	if err != nil || videoURL == "" {
+		// fallback: yt-dlp can handle public videos directly
+		return link, nil
 	}
 
-	return args
+	return videoURL, nil
 }
 
 // ===================== HELPERS =====================
@@ -223,17 +205,6 @@ func detectMediaType(files []string) string {
 		}
 	}
 	return "image"
-}
-
-func isGalleryLink(link string) bool {
-	lower := strings.ToLower(link)
-	return strings.Contains(lower, "twitter") ||
-		strings.Contains(lower, "x.com") ||
-		strings.Contains(lower, "facebook") ||
-		strings.Contains(lower, "fb.watch") ||
-		strings.Contains(lower, "pinterest") ||
-		strings.Contains(lower, "pin.it") ||
-		strings.Contains(lower, "instagram")
 }
 
 // ===================== SEND MEDIA =====================
@@ -269,9 +240,4 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 	)
 
 	bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, keyboard))
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }

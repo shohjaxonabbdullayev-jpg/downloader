@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	ffmpegPath     = "ffmpeg"
 	ytDlpPath      = "yt-dlp"
 	galleryDlPath  = "gallery-dl"
 	maxVideoHeight = 720
@@ -50,7 +49,7 @@ func main() {
 	}
 	log.Printf("🤖 Bot running as @%s", bot.Self.UserName)
 
-	// Health check server
+	// Health check
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -144,39 +143,26 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
-	args := buildYtDlpArgs(link, out)
-
-	outStr, _ := run(ytDlpPath, args...)
+	outStr, _ := run(ytDlpPath, buildYtDlpArgs(link, out)...)
 	files := recentFiles(start)
 	if len(files) > 0 {
 		return files, detectMediaType(files), nil
 	}
 
-	// Retry if authentication error
-	if isAuthError(outStr) {
-		log.Println("⚠️ Cookies expired. Refreshing...")
-		refreshCookies(link)
-		args = buildYtDlpArgs(link, out) // rebuild args with refreshed cookies
-		outStr, _ = run(ytDlpPath, args...)
-		files = recentFiles(start)
-		if len(files) > 0 {
-			return files, detectMediaType(files), nil
-		}
-	}
-
 	// Fallback to gallery-dl for images
 	if isGalleryLink(link) {
-		run(galleryDlPath, "-d", downloadsDir, link)
+		_, _ = run(galleryDlPath, "-d", downloadsDir, link)
 		files = recentFiles(start)
 		if len(files) > 0 {
 			return files, "image", nil
 		}
 	}
 
+	log.Println("Download failed for link:", link, "yt-dlp output:", outStr)
 	return nil, "", fmt.Errorf("download failed")
 }
 
-// Build yt-dlp arguments dynamically
+// Build yt-dlp arguments using manual cookies
 func buildYtDlpArgs(link, out string) []string {
 	args := []string{
 		"--no-warnings",
@@ -235,11 +221,6 @@ func detectMediaType(files []string) string {
 	return "image"
 }
 
-func isAuthError(output string) bool {
-	lower := strings.ToLower(output)
-	return strings.Contains(lower, "403") || strings.Contains(lower, "authentication") || strings.Contains(lower, "private")
-}
-
 func isGalleryLink(link string) bool {
 	lower := strings.ToLower(link)
 	return strings.Contains(lower, "twitter") ||
@@ -249,24 +230,6 @@ func isGalleryLink(link string) bool {
 		strings.Contains(lower, "pinterest") ||
 		strings.Contains(lower, "pin.it") ||
 		strings.Contains(lower, "instagram")
-}
-
-func refreshCookies(link string) {
-	browser := "chrome" // or firefox
-	cookieFiles := map[string]string{
-		"youtube":   "youtube.txt",
-		"instagram": "instagram.txt",
-		"pinterest": "pinterest.txt",
-		"twitter":   "twitter.txt",
-		"facebook":  "facebook.txt",
-	}
-
-	for key, file := range cookieFiles {
-		if strings.Contains(strings.ToLower(link), key) {
-			run(ytDlpPath, "--cookies-from-browser", browser, "--cookies", file, link)
-			log.Printf("✅ Cookies refreshed for %s", key)
-		}
-	}
 }
 
 // ===================== SEND MEDIA =====================

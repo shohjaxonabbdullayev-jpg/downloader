@@ -24,9 +24,20 @@ const instagramAPIKey = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
 // ===================== MAIN =====================
 func main() {
 	_ = godotenv.Load()
+
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
 		log.Fatal("❌ BOT_TOKEN missing")
+	}
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	webhookURL := os.Getenv("WEBHOOK_URL") // must be HTTPS, e.g., https://yourdomain.com/<token>
+	if webhookURL == "" {
+		log.Fatal("❌ WEBHOOK_URL missing")
 	}
 
 	os.MkdirAll(downloadsDir, 0755)
@@ -37,21 +48,33 @@ func main() {
 	}
 	log.Printf("🤖 Bot running as @%s", bot.Self.UserName)
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := bot.GetUpdatesChan(u)
+	// Set webhook
 
-	for update := range updates {
-		if update.Message != nil {
-			go handleMessage(bot, update.Message)
+	updates := bot.ListenForWebhook("/" + bot.Token)
+	go func() {
+		for update := range updates {
+			handleUpdate(bot, update)
 		}
-	}
+	}()
+
+	// Health check
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	log.Printf("💚 Server running on port %s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
-// ===================== HANDLE MESSAGES =====================
-func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	text := strings.TrimSpace(msg.Text)
-	chatID := msg.Chat.ID
+// ===================== HANDLE UPDATE =====================
+func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+	if update.Message == nil {
+		return
+	}
+
+	text := strings.TrimSpace(update.Message.Text)
+	chatID := update.Message.Chat.ID
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, "👋 Salom! Instagram username yoki link yuboring."))
@@ -80,7 +103,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			}
 
 			for _, f := range files {
-				sendMedia(bot, chatID, f, msg.MessageID, mediaType)
+				sendMedia(bot, chatID, f, update.Message.MessageID, mediaType)
 				os.Remove(f)
 			}
 		}(link)
@@ -104,9 +127,7 @@ func extractLinks(text string) []string {
 func downloadInstagramMedia(link string) ([]string, string, error) {
 	username := extractUsername(link)
 
-	// Fetch posts
 	postFiles, _ := fetchInstagramPosts(username)
-	// Fetch stories
 	storyFiles, _ := fetchInstagramStories(username)
 
 	files := append(postFiles, storyFiles...)
@@ -162,7 +183,6 @@ func fetchInstagramPosts(username string) ([]string, error) {
 			MediaURL string `json:"mediaUrl"`
 		} `json:"posts"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
@@ -200,7 +220,6 @@ func fetchInstagramStories(username string) ([]string, error) {
 			MediaURL string `json:"mediaUrl"`
 		} `json:"stories"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}

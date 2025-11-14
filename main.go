@@ -21,7 +21,7 @@ const (
 	ffmpegPath     = "ffmpeg"
 	ytDlpPath      = "yt-dlp"
 	galleryDlPath  = "gallery-dl"
-	maxVideoHeight = 720
+	maxVideoHeight = 1080
 )
 
 var (

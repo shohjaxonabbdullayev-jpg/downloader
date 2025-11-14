@@ -1,15 +1,26 @@
 # Netscape HTTP Cookie File
-# https://curl.haxx.se/rfc/cookie_spec.html
-# This is a generated file! Do not edit.
+# http://curl.haxx.se/rfc/cookie_spec.html
+# This is a generated file!  Do not edit.
 
 .instagram.com	TRUE	/	TRUE	1765904884	datr	9DkyZwnEJjfC6yVLqd03Luqb
-.instagram.com	TRUE	/	TRUE	1762880887	ig_did	3C74FEA2-40A3-4A46-A316-C739F00BCEA4
-.instagram.com	TRUE	/	TRUE	1762880886	ig_nrcb	1
-.instagram.com	TRUE	/	TRUE	1770556622	ds_user_id	57288693839
+.instagram.com	TRUE	/	TRUE	1770926011	ds_user_id	57288693839
 .instagram.com	TRUE	/	TRUE	1787467146	mid	aHs9igALAAGVQohc7PDmZZQhKb7Z
-.instagram.com	TRUE	/	TRUE	1787467149	ps_l	1
-.instagram.com	TRUE	/	TRUE	1787467149	ps_n	1
-.instagram.com	TRUE	/	TRUE	1797340622	csrftoken	eocwwQapIcnYZwHYa1BTjWZnazDPeYKc
-.instagram.com	TRUE	/	TRUE	1763385358	wd	1920x953
-.instagram.com	TRUE	/	TRUE	1794316557	sessionid	57288693839%3AA33nWMe5QzlY7W%3A26%3AAYh65bpHl8OeOQdjMTAyTad1-UtnuofoTagZyIaYHA
-.instagram.com	TRUE	/	TRUE	0	rur	"CLN\05457288693839\0541794316622:01fe9295ceca6dece9590f457dc8a2b9706510540d5330223a5317d4c1043f5b1265a2b4"
+.instagram.com	TRUE	/	TRUE	1787467148	ps_l	1
+.instagram.com	TRUE	/	TRUE	1787467148	ps_n	1
+.instagram.com	TRUE	/	TRUE	1797710011	csrftoken	eocwwQapIcnYZwHYa1BTjWZnazDPeYKc
+sssinstagram.com	FALSE	/	FALSE	1795678577	uid	7b5308e42eb85802
+.sssinstagram.com	TRUE	/	FALSE	1795682203	_ga	GA1.1.90545103.1761118578
+sssinstagram.com	FALSE	/	FALSE	1763710578	errorFallbackPopup	6
+sssinstagram.com	FALSE	/	FALSE	1763710578	adsForm	85
+sssinstagram.com	FALSE	/	FALSE	1763710578	adsAfterSearch	67
+sssinstagram.com	FALSE	/	FALSE	1763710578	adsPopupClick	54
+.sssinstagram.com	TRUE	/	FALSE	1795682203	_ga_KDHKH4GDQE	GS2.1.s1761122202$o2$g1$t1761122203$j59$l0$h0
+.sssinstagram.com	TRUE	/	TRUE	1794814578	__gads	ID=9a5ca274c62de257:T=1761118578:RT=1761122203:S=ALNI_MaOlquJ3V8xLc8WYUYLhhlW-kFOyg
+.sssinstagram.com	TRUE	/	TRUE	1776670578	__eoi	ID=4e2dc30d69eda6f6:T=1761118578:RT=1761122203:S=AA-AfjZbUtBLkUAqppFyRp09eB6u
+.sssinstagram.com	TRUE	/	FALSE	1792658211	FCNEC	%5B%5B%22AKsRol8ObfgD_9Izegmehk63hD9K6fWsGgqz7SDTC2xlz_g3O7YH3ewjf91TwWNqNY3rAUYbqF52Z6KWZLgaE1_N-ZorzdSoU5jaoOZHTfGB5ZzI0SIoWylNwccjp2TyrncrUTAZ5as4YFmbWl4XS6FEPTaE-ncRfA%3D%3D%22%5D%5D
+.instagram.com	TRUE	/	TRUE	1763386619	ig_direct_region_hint	"RVA\05457288693839\0541794317819:01fee7cab8823917d09a280ec46c933c2e6c0d3d9a9e9d17caf58ee9dca43c6e299210cd"
+.instagram.com	TRUE	/	TRUE	1794648871	ig_did	BB97066B-A59F-40E4-9235-CBE5417BD8BC
+.instagram.com	TRUE	/	TRUE	1763718006	dpr	1.5
+.instagram.com	TRUE	/	TRUE	1763754760	wd	1920x953
+.instagram.com	TRUE	/	TRUE	1794685961	sessionid	57288693839%3AQQAOtJVmpd8vHn%3A13%3AAYjaQvF0cxtgfa8-t1V-LkuUYn0Gc59RTiicRQDZgQ
+.instagram.com	TRUE	/	TRUE	0	rur	"CLN\05457288693839\0541794686014:01fee869b7143521e3cf4ace555b6227d9b05c3bce7894c462f0bfdb93db3b937b2f9ce1"

@@ -55,8 +55,8 @@ func main() {
         http.ListenAndServe(":"+port, nil)
     }()
 
-    // Auto refresh YouTube cookies
-    go autoRefreshYouTubeCookies()
+    // ❌ REMOVED auto-refresh cookies
+    // go autoRefreshYouTubeCookies()
 
     updates := bot.GetUpdatesChan(tgbotapi.NewUpdate(0))
 
@@ -64,16 +64,6 @@ func main() {
         if update.Message != nil {
             go handleMessage(bot, update.Message)
         }
-    }
-}
-
-// Auto refresh YouTube cookies every 6 hours
-func autoRefreshYouTubeCookies() {
-    for {
-        log.Println("🔄 Refreshing YouTube cookies...")
-        run(ytDlpPath, "--cookies-from-browser", "chrome", "--cookies", "youtube.txt", "https://www.youtube.com")
-        log.Println("✅ YouTube cookies refreshed.")
-        time.Sleep(6 * time.Hour)
     }
 }
 
@@ -129,7 +119,17 @@ func extractLinks(text string) []string {
 
 func isSupported(u string) bool {
     u = strings.ToLower(u)
-    return strings.Contains(u, "youtube") || strings.Contains(u, "youtu.be") || strings.Contains(u, "instagram") || strings.Contains(u, "instagr.am") || strings.Contains(u, "tiktok") || strings.Contains(u, "pinterest") || strings.Contains(u, "pin.it") || strings.Contains(u, "facebook") || strings.Contains(u, "fb.watch") || strings.Contains(u, "twitter") || strings.Contains(u, "x.com")
+    return strings.Contains(u, "youtube") ||
+        strings.Contains(u, "youtu.be") ||
+        strings.Contains(u, "instagram") ||
+        strings.Contains(u, "instagr.am") ||
+        strings.Contains(u, "tiktok") ||
+        strings.Contains(u, "pinterest") ||
+        strings.Contains(u, "pin.it") ||
+        strings.Contains(u, "facebook") ||
+        strings.Contains(u, "fb.watch") ||
+        strings.Contains(u, "twitter") ||
+        strings.Contains(u, "x.com")
 }
 
 // Download function
@@ -140,20 +140,26 @@ func download(link string) ([]string, string, error) {
 
     var format string
 
-    // YouTube → 720p only
+    // 🎯 YouTube → always 720p max
     if strings.Contains(link, "youtube.com") || strings.Contains(link, "youtu.be") {
-        format = "bestvideo[height=720]+bestaudio/best[height=720]"
+        format = "bestvideo[height<=720]+bestaudio/best[height<=720]"
     } else {
         // Other sites → max quality
         format = "bv*+ba/best"
     }
 
-    args := []string{"--no-warnings", "-f", format, "--merge-output-format", "mp4", "-o", out, link}
-
-    // YouTube cookies
-    if strings.Contains(link, "youtube") && fileExists("youtube.txt") {
-        args = append([]string{"--cookies", "youtube.txt"}, args...)
+    args := []string{
+        "--no-warnings",
+        "-f", format,
+        "--merge-output-format", "mp4",
+        "-o", out,
+        link,
     }
+
+    // ❌ REMOVED: cookies
+    // if strings.Contains(link, "youtube") && fileExists("youtube.txt") {
+    //     args = append([]string{"--cookies", "youtube.txt"}, args...)
+    // }
 
     run(ytDlpPath, args...)
 
@@ -169,8 +175,9 @@ func download(link string) ([]string, string, error) {
         return files, mType, nil
     }
 
-    // Fallback: gallery-dl for images
+    // gallery-dl fallback
     run(galleryDlPath, "-d", downloadsDir, link)
+
     files = recentFiles(start)
     if len(files) > 0 {
         return files, "image", nil
@@ -223,7 +230,10 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
     }
 
     btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "")
-    btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
+    btnGroup := tgbotapi.NewInlineKeyboardButtonURL(
+        "👥 Guruhga qo‘shish",
+        fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
+    )
 
     kb := tgbotapi.NewInlineKeyboardMarkup(
         tgbotapi.NewInlineKeyboardRow(btnShare),
@@ -237,4 +247,5 @@ func fileExists(path string) bool {
     info, err := os.Stat(path)
     return err == nil && !info.IsDir()
 }
+
 

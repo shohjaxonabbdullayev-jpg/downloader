@@ -1,23 +1,19 @@
 # ============================
-# 🏗️ STAGE 1 — Build Node.js app
+# 🏗️ Node.js + Python Downloader Bot
 # ============================
-FROM node:20-bullseye AS builder
+FROM node:20-bullseye
 
+# Set working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json
-COPY package*.json ./
+# Copy Node.js dependency files
+COPY package.json package-lock.json* ./
 
-# Install Node dependencies
-RUN npm ci --only=production
+# Install Node.js dependencies (production only)
+RUN npm install --production
 
 # Copy app source
 COPY . .
-
-# ==============================
-# 🚀 STAGE 2 — Final lightweight image
-# ==============================
-FROM debian:bookworm-slim
 
 # Install runtime dependencies
 RUN apt-get update && \
@@ -39,24 +35,18 @@ RUN python3 -m venv /opt/yt && \
     ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
     ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
 
-# Set working directory
-WORKDIR /app
-
-# Copy Node.js app from builder stage
-COPY --from=builder /app ./
-
 # Copy credential/config files
 COPY twitter.txt facebook.txt instagram.txt youtube.txt pinterest.txt ./
 
 # Create downloads directory
 RUN mkdir -p downloads
 
-# Set environment variables
+# Environment variables
 ENV PORT=10000
 EXPOSE 10000
 
 # Healthcheck
 HEALTHCHECK CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run the Node.js bot
+# Run Node.js bot
 CMD ["node", "downloader-bot.js"]

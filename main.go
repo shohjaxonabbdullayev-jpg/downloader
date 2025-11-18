@@ -78,7 +78,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube, Instagram, Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 YouTube (720p), Instagram (high-res), Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -96,6 +96,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := download(l)
 			<-sem
 
+			// Delete loading message
 			bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: waitMsg.MessageID})
 
 			if err != nil || len(files) == 0 {
@@ -145,23 +146,22 @@ func download(link string) ([]string, string, error) {
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
 	var args []string
 
-	// Determine platform-specific format
 	switch {
 	case strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be"):
+		// YouTube 720p
 		args = []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
 		if fileExists("youtube.txt") {
 			args = append([]string{"--cookies", "youtube.txt"}, args...)
 		}
 	case strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am"):
-		// Instagram → all items in highest quality
+		// Instagram → all posts in highest quality
 		args = []string{"--no-warnings", "-f", "best", "-o", out, link}
 		if fileExists("instagram.txt") {
 			args = append([]string{"--cookies", "instagram.txt"}, args...)
 		}
 	default:
-		// Other platforms → try best video/audio first
+		// Other platforms → best quality
 		args = []string{"--no-warnings", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out, link}
-		// Cookies for other platforms
 		if strings.Contains(link, "pinterest") && fileExists("pinterest.txt") {
 			args = append([]string{"--cookies", "pinterest.txt"}, args...)
 		}
@@ -173,6 +173,7 @@ func download(link string) ([]string, string, error) {
 		}
 	}
 
+	// Attempt yt-dlp first
 	_, _ = run(ytDlpPath, args...)
 	files := recentFiles(start)
 	if len(files) > 0 {
@@ -187,7 +188,7 @@ func download(link string) ([]string, string, error) {
 		return files, mType, nil
 	}
 
-	// Fallback: gallery-dl for images if yt-dlp fails
+	// Fallback gallery-dl for images if yt-dlp fails
 	run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
@@ -197,6 +198,7 @@ func download(link string) ([]string, string, error) {
 	return nil, "", fmt.Errorf("download failed")
 }
 
+// ===================== EXECUTE COMMAND =====================
 func run(cmd string, args ...string) (string, error) {
 	c := exec.Command(cmd, args...)
 	var buf bytes.Buffer
@@ -206,6 +208,7 @@ func run(cmd string, args ...string) (string, error) {
 	return buf.String(), err
 }
 
+// ===================== RECENT FILES =====================
 func recentFiles(since time.Time) []string {
 	var files []string
 	filepath.Walk(downloadsDir, func(p string, info os.FileInfo, _ error) error {
@@ -218,7 +221,7 @@ func recentFiles(since time.Time) []string {
 	return files
 }
 
-// ===================== SEND MEDIA WITH INLINE SHARE =====================
+// ===================== SEND MEDIA =====================
 func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, mediaType string) {
 	caption := "@downloaderin123_bot orqali yuklab olindi"
 
@@ -242,6 +245,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		return
 	}
 
+	// Inline buttons
 	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "")
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
 

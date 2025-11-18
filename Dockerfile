@@ -3,17 +3,19 @@
 # ============================
 FROM golang:1.24.4 AS builder
 
+# Set working directory
 WORKDIR /app
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# Download Go modules
+# Copy Go modules and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy app source
+# Copy source code
 COPY . .
 
 # Build Go binary
@@ -28,38 +30,43 @@ FROM debian:bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
-        python3-full \
+        python3 \
+        python3-venv \
         python3-pip \
         ca-certificates \
         curl \
         wget \
         git && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# ✅ Install Python packages yt-dlp and gallery-dl in isolated venv
+# Create Python virtual environment and install packages
 RUN python3 -m venv /opt/yt && \
+    /opt/yt/bin/pip install --upgrade pip && \
     /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
     ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
     ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
 
-# Create app directory
+# Set working directory
 WORKDIR /app
 
-# Copy Go binary
+# Copy Go binary from builder stage
 COPY --from=builder /app/downloader-bot .
-COPY twitter.txt ./twitter.txt
-COPY facebook.txt ./facebook.txt
-COPY instagram.txt ./instagram.txt
-COPY youtube.txt ./youtube.txt
-COPY pinterest.txt ./pinterest.txt
+
+# Copy credential/config files
+COPY twitter.txt facebook.txt instagram.txt youtube.txt pinterest.txt ./
+
+# Create downloads directory
 RUN mkdir -p downloads
 
-# Environment variables
+# Set environment variables
 ENV PORT=10000
+
+# Expose port
 EXPOSE 10000
 
-# Health check
+# Healthcheck
 HEALTHCHECK CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run bot
+# Run the Go bot
 CMD ["/app/downloader-bot"]

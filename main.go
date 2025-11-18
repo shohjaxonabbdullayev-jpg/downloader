@@ -2,9 +2,7 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,13 +18,16 @@ import (
 )
 
 const (
+	ffmpegPath     = "ffmpeg"
+	ytDlpPath      = "yt-dlp"
 	galleryDlPath  = "gallery-dl"
 	maxVideoHeight = 720
-	downloadsDir   = "downloads"
-	semLimit       = 3
 )
 
-var sem = make(chan struct{}, semLimit)
+var (
+	downloadsDir = "downloads"
+	sem          = make(chan struct{}, 3) // concurrency limit
+)
 
 func main() {
 	_ = godotenv.Load()
@@ -49,6 +50,7 @@ func main() {
 	}
 	log.Printf("🤖 Bot running as @%s", bot.Self.UserName)
 
+	// Health check server
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -76,7 +78,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube (720p via API), Instagram (high-res), Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 YouTube (720p), Instagram (high-res), Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -94,6 +96,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := download(l)
 			<-sem
 
+			// Delete loading message
 			bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: waitMsg.MessageID})
 
 			if err != nil || len(files) == 0 {
@@ -140,21 +143,38 @@ func isSupported(u string) bool {
 // ===================== DOWNLOAD =====================
 func download(link string) ([]string, string, error) {
 	start := time.Now()
+	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
+	var args []string
 
-	// Use RapidAPI for YouTube
-	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
-		file, err := downloadYouTubeViaAPI(link)
-		if err != nil {
-			return nil, "", err
+	switch {
+	case strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be"):
+		// YouTube 720p
+		args = []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
+		if fileExists("youtube.txt") {
+			args = append([]string{"--cookies", "youtube.txt"}, args...)
 		}
-		return []string{file}, "video", nil
+	case strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am"):
+		// Instagram → all posts in highest quality
+		args = []string{"--no-warnings", "-f", "best", "-o", out, link}
+		if fileExists("instagram.txt") {
+			args = append([]string{"--cookies", "instagram.txt"}, args...)
+		}
+	default:
+		// Other platforms → best quality
+		args = []string{"--no-warnings", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out, link}
+		if strings.Contains(link, "pinterest") && fileExists("pinterest.txt") {
+			args = append([]string{"--cookies", "pinterest.txt"}, args...)
+		}
+		if (strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com")) && fileExists("twitter.txt") {
+			args = append([]string{"--cookies", "twitter.txt"}, args...)
+		}
+		if (strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch")) && fileExists("facebook.txt") {
+			args = append([]string{"--cookies", "facebook.txt"}, args...)
+		}
 	}
 
-	// Other platforms → yt-dlp / gallery-dl
-	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
-	args := []string{"--no-warnings", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out, link}
-	_, _ = run("yt-dlp", args...)
-
+	// Attempt yt-dlp first
+	_, _ = run(ytDlpPath, args...)
 	files := recentFiles(start)
 	if len(files) > 0 {
 		mType := "image"
@@ -168,7 +188,7 @@ func download(link string) ([]string, string, error) {
 		return files, mType, nil
 	}
 
-	// Fallback: gallery-dl for images (Instagram, Twitter/X, Facebook, Pinterest)
+	// Fallback gallery-dl for images if yt-dlp fails
 	run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
@@ -176,56 +196,6 @@ func download(link string) ([]string, string, error) {
 	}
 
 	return nil, "", fmt.Errorf("download failed")
-}
-
-// ===================== DOWNLOAD YOUTUBE VIA RAPIDAPI =====================
-func downloadYouTubeViaAPI(videoURL string) (string, error) {
-	apiURL := "https://youtube-downloader-video.p.rapidapi.com/yt_stream"
-	req, _ := http.NewRequest("POST", apiURL, nil)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("video_url", videoURL)
-	req.Header.Set("x-rapidapi-host", "youtube-downloader-video.p.rapidapi.com")
-	req.Header.Set("x-rapidapi-key", "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return "", err
-	}
-
-	// Expect "url" field with direct mp4 download
-	urlStr, ok := data["url"].(string)
-	if !ok || urlStr == "" {
-		return "", fmt.Errorf("failed to get download URL from API")
-	}
-
-	// Download video to local file
-	filePath := filepath.Join(downloadsDir, fmt.Sprintf("%d_youtube.mp4", time.Now().Unix()))
-	outFile, err := os.Create(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer outFile.Close()
-
-	videoResp, err := http.Get(urlStr)
-	if err != nil {
-		return "", err
-	}
-	defer videoResp.Body.Close()
-
-	_, err = io.Copy(outFile, videoResp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return filePath, nil
 }
 
 // ===================== EXECUTE COMMAND =====================
@@ -275,6 +245,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		return
 	}
 
+	// Inline buttons
 	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "")
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
 

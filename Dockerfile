@@ -1,25 +1,18 @@
 # ============================
-# 🏗️ STAGE 1 — Build Go binary
+# 🏗️ STAGE 1 — Build Node.js app
 # ============================
-FROM golang:1.24.4 AS builder
+FROM node:20-bullseye AS builder
 
-# Set working directory
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential && \
-    rm -rf /var/lib/apt/lists/*
+# Copy package.json and package-lock.json
+COPY package*.json ./
 
-# Copy Go modules and download dependencies
-COPY go.mod go.sum ./
-RUN go mod download
+# Install Node dependencies
+RUN npm ci --only=production
 
-# Copy source code
+# Copy app source
 COPY . .
-
-# Build Go binary
-RUN go build -o downloader-bot .
 
 # ==============================
 # 🚀 STAGE 2 — Final lightweight image
@@ -37,10 +30,9 @@ RUN apt-get update && \
         curl \
         wget \
         git && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Create Python virtual environment and install packages
+# Create Python virtual environment and install yt-dlp + gallery-dl
 RUN python3 -m venv /opt/yt && \
     /opt/yt/bin/pip install --upgrade pip && \
     /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
@@ -50,8 +42,8 @@ RUN python3 -m venv /opt/yt && \
 # Set working directory
 WORKDIR /app
 
-# Copy Go binary from builder stage
-COPY --from=builder /app/downloader-bot .
+# Copy Node.js app from builder stage
+COPY --from=builder /app ./
 
 # Copy credential/config files
 COPY twitter.txt facebook.txt instagram.txt youtube.txt pinterest.txt ./
@@ -61,12 +53,10 @@ RUN mkdir -p downloads
 
 # Set environment variables
 ENV PORT=10000
-
-# Expose port
 EXPOSE 10000
 
 # Healthcheck
 HEALTHCHECK CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run the Go bot
-CMD ["/app/downloader-bot"]
+# Run the Node.js bot
+CMD ["node", "downloader-bot.js"]

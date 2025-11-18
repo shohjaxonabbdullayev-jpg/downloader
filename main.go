@@ -1,12 +1,4 @@
-i.NewInlineKeyboardButtonURL(
-				"👥 Guruhga qo‘shish",
-				fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
-			),
-		),
-	)
-
-	bot.Send(
-		tgbotapi.Newpackage main
+package main
 
 import (
 	"bytes"
@@ -29,7 +21,7 @@ const (
 	ffmpegPath     = "ffmpeg"
 	ytDlpPath      = "yt-dlp"
 	galleryDlPath  = "gallery-dl"
-	maxVideoHeight = 1080
+	maxVideoHeight = 720
 )
 
 var (
@@ -122,7 +114,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 // ===================== LINK PARSING =====================
 func extractLinks(text string) []string {
-	re := regexp.MustCompile(https?://\S+)
+	re := regexp.MustCompile(`https?://\S+`)
 	raw := re.FindAllString(text, -1)
 	var out []string
 	for _, u := range raw {

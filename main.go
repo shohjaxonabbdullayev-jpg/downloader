@@ -78,7 +78,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube (720p), Instagram (high-res), Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 Instagram, Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -127,9 +127,7 @@ func extractLinks(text string) []string {
 
 func isSupported(u string) bool {
 	u = strings.ToLower(u)
-	return strings.Contains(u, "youtube") ||
-		strings.Contains(u, "youtu.be") ||
-		strings.Contains(u, "instagram") ||
+	return strings.Contains(u, "instagram") ||
 		strings.Contains(u, "instagr.am") ||
 		strings.Contains(u, "pinterest") ||
 		strings.Contains(u, "pin.it") ||
@@ -147,20 +145,12 @@ func download(link string) ([]string, string, error) {
 	var args []string
 
 	switch {
-	case strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be"):
-		// YouTube 720p
-		args = []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
-		if fileExists("youtube.txt") {
-			args = append([]string{"--cookies", "youtube.txt"}, args...)
-		}
 	case strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am"):
-		// Instagram → all posts in highest quality
 		args = []string{"--no-warnings", "-f", "best", "-o", out, link}
 		if fileExists("instagram.txt") {
 			args = append([]string{"--cookies", "instagram.txt"}, args...)
 		}
 	default:
-		// Other platforms → best quality
 		args = []string{"--no-warnings", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out, link}
 		if strings.Contains(link, "pinterest") && fileExists("pinterest.txt") {
 			args = append([]string{"--cookies", "pinterest.txt"}, args...)
@@ -173,7 +163,7 @@ func download(link string) ([]string, string, error) {
 		}
 	}
 
-	// Attempt yt-dlp first
+	// Attempt yt-dlp
 	_, _ = run(ytDlpPath, args...)
 	files := recentFiles(start)
 	if len(files) > 0 {
@@ -188,7 +178,7 @@ func download(link string) ([]string, string, error) {
 		return files, mType, nil
 	}
 
-	// Fallback gallery-dl for images if yt-dlp fails
+	// Fallback gallery-dl
 	run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {

@@ -78,7 +78,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube, Instagram, Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 YouTube (720p), Instagram (max res), Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -144,36 +144,30 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
-	args := []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
 
-	// Optional cookie files
+	// Instagram → gallery-dl max resolution
+	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
+		args := []string{"-d", downloadsDir, link}
+		if fileExists("instagram.txt") {
+			args = append([]string{"--cookies", "instagram.txt"}, args...)
+		}
+		run(galleryDlPath, args...)
+		files := recentFiles(start)
+		if len(files) > 0 {
+			return files, "image", nil
+		}
+		return nil, "", fmt.Errorf("Instagram download failed")
+	}
+
+	// YouTube → 720p
+	format := fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight)
+	args := []string{"--no-warnings", "-f", format, "--merge-output-format", "mp4", "-o", out, link}
 	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
 		if fileExists("youtube.txt") {
 			args = append([]string{"--cookies", "youtube.txt"}, args...)
 		}
 	}
-	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
-		if fileExists("instagram.txt") {
-			args = append([]string{"--cookies", "instagram.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") {
-		if fileExists("pinterest.txt") {
-			args = append([]string{"--cookies", "pinterest.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") {
-		if fileExists("twitter.txt") {
-			args = append([]string{"--cookies", "twitter.txt"}, args...)
-		}
-	}
-	if strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
-		if fileExists("facebook.txt") {
-			args = append([]string{"--cookies", "facebook.txt"}, args...)
-		}
-	}
 
-	// Try yt-dlp first
 	_, _ = run(ytDlpPath, args...)
 	files := recentFiles(start)
 	if len(files) > 0 {
@@ -188,19 +182,12 @@ func download(link string) ([]string, string, error) {
 		return files, mediaType, nil
 	}
 
-	// Fallback: gallery-dl for images (Twitter/X & Facebook)
-	if strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") || strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
+	// Fallback: gallery-dl for Pinterest, Twitter/X, Facebook
+	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") ||
+		strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") ||
+		strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
 		run(galleryDlPath, "-d", downloadsDir, link)
-		files = recentFiles(start)
-		if len(files) > 0 {
-			return files, "image", nil
-		}
-	}
-
-	// Pinterest/Instagram gallery fallback
-	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") || strings.Contains(link, "instagram") {
-		run(galleryDlPath, "-d", downloadsDir, link)
-		files = recentFiles(start)
+		files := recentFiles(start)
 		if len(files) > 0 {
 			return files, "image", nil
 		}
@@ -254,10 +241,8 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		return
 	}
 
-	// Inline buttons: first row = forward via inline, second row = add bot to group
-	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "") // inline mode
+	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "")
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
-
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(btnShare),
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
@@ -271,4 +256,3 @@ func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
 }
-

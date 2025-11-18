@@ -21,7 +21,7 @@ const (
 	ffmpegPath     = "ffmpeg"
 	ytDlpPath      = "yt-dlp"
 	galleryDlPath  = "gallery-dl"
-	maxVideoHeight = 720
+	maxVideoHeight = 1080
 )
 
 var (
@@ -78,7 +78,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
-			"👋 Salom %s!\n\n🎥 YouTube (720p), Instagram (max res), Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
+			"👋 Salom %s!\n\n🎥 YouTube, Instagram, Pinterest, TikTok, Facebook yoki Twitter link yuboring — men videoni yoki rasmni yuboraman.",
 			msg.From.FirstName)))
 		return
 	}
@@ -96,7 +96,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := download(l)
 			<-sem
 
-			// Delete loading message
 			bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: waitMsg.MessageID})
 
 			if err != nil || len(files) == 0 {
@@ -144,53 +143,55 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
+	var args []string
 
-	// Instagram → gallery-dl max resolution
-	if strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am") {
-		args := []string{"-d", downloadsDir, link}
+	// Determine platform-specific format
+	switch {
+	case strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be"):
+		args = []string{"--no-warnings", "-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight), "--merge-output-format", "mp4", "-o", out, link}
+		if fileExists("youtube.txt") {
+			args = append([]string{"--cookies", "youtube.txt"}, args...)
+		}
+	case strings.Contains(link, "instagram") || strings.Contains(link, "instagr.am"):
+		// Instagram → all items in highest quality
+		args = []string{"--no-warnings", "-f", "best", "-o", out, link}
 		if fileExists("instagram.txt") {
 			args = append([]string{"--cookies", "instagram.txt"}, args...)
 		}
-		run(galleryDlPath, args...)
-		files := recentFiles(start)
-		if len(files) > 0 {
-			return files, "image", nil
+	default:
+		// Other platforms → try best video/audio first
+		args = []string{"--no-warnings", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out, link}
+		// Cookies for other platforms
+		if strings.Contains(link, "pinterest") && fileExists("pinterest.txt") {
+			args = append([]string{"--cookies", "pinterest.txt"}, args...)
 		}
-		return nil, "", fmt.Errorf("Instagram download failed")
-	}
-
-	// YouTube → 720p
-	format := fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best/best", maxVideoHeight)
-	args := []string{"--no-warnings", "-f", format, "--merge-output-format", "mp4", "-o", out, link}
-	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
-		if fileExists("youtube.txt") {
-			args = append([]string{"--cookies", "youtube.txt"}, args...)
+		if (strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com")) && fileExists("twitter.txt") {
+			args = append([]string{"--cookies", "twitter.txt"}, args...)
+		}
+		if (strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch")) && fileExists("facebook.txt") {
+			args = append([]string{"--cookies", "facebook.txt"}, args...)
 		}
 	}
 
 	_, _ = run(ytDlpPath, args...)
 	files := recentFiles(start)
 	if len(files) > 0 {
-		mediaType := "image"
+		mType := "image"
 		for _, f := range files {
 			ext := strings.ToLower(filepath.Ext(f))
 			if ext == ".mp4" || ext == ".mov" {
-				mediaType = "video"
+				mType = "video"
 				break
 			}
 		}
-		return files, mediaType, nil
+		return files, mType, nil
 	}
 
-	// Fallback: gallery-dl for Pinterest, Twitter/X, Facebook
-	if strings.Contains(link, "pinterest") || strings.Contains(link, "pin.it") ||
-		strings.Contains(link, "twitter.com") || strings.Contains(link, "x.com") ||
-		strings.Contains(link, "facebook") || strings.Contains(link, "fb.watch") {
-		run(galleryDlPath, "-d", downloadsDir, link)
-		files := recentFiles(start)
-		if len(files) > 0 {
-			return files, "image", nil
-		}
+	// Fallback: gallery-dl for images if yt-dlp fails
+	run(galleryDlPath, "-d", downloadsDir, link)
+	files = recentFiles(start)
+	if len(files) > 0 {
+		return files, "image", nil
 	}
 
 	return nil, "", fmt.Errorf("download failed")
@@ -243,6 +244,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 
 	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch("📤 Ulashish", "")
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL("👥 Guruhga qo‘shish", fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName))
+
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(btnShare),
 		tgbotapi.NewInlineKeyboardRow(btnGroup),

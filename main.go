@@ -26,6 +26,7 @@ const (
 	galleryDlPath       = "gallery-dl"
 	maxVideoHeight      = 720
 	telegramMaxFileSize = 50 * 1024 * 1024 // 50 MB bot upload limit
+	minFileSizeBytes    = 1024              // ignore tiny files (thumbnails etc.)
 )
 
 var (
@@ -105,17 +106,23 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			files, mediaType, err := download(l)
 			<-sem
 
-			bot.Request(tgbotapi.DeleteMessageConfig{
+			// try to delete the "loading" message once
+			_ = bot.Request(tgbotapi.DeleteMessageConfig{
 				ChatID:    chatID,
 				MessageID: waitMsg.MessageID,
 			})
 
 			if err != nil || len(files) == 0 {
+				if err != nil {
+					log.Printf("download error for %s: %v", l, err)
+				}
 				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Linkni tekshiring."))
 				return
 			}
 
+			// send the selected files (usually one main file)
 			for _, f := range files {
+				log.Printf("Sending file: %s (mediaType=%s)", f, mediaType)
 				sendMedia(bot, chatID, f, msg.MessageID, mediaType)
 				os.Remove(f)
 			}
@@ -179,28 +186,37 @@ func download(link string) ([]string, string, error) {
 		}
 	}
 
-	// yt-dlp attempt
-	_, _ = run(ytDlpPath, args...)
+	// Run yt-dlp and capture output (helpful for debugging)
+	outText, err := run(ytDlpPath, args...)
+	if err != nil {
+		// log detailed yt-dlp output for debugging
+		log.Printf("yt-dlp error: %v\noutput:\n%s", err, outText)
+		// continue to check gallery-dl fallback
+	} else {
+		log.Printf("yt-dlp output:\n%s", outText)
+	}
+
+	// collect new files and pick best media
 	files := recentFiles(start)
-	if len(files) > 0 {
-		mType := "image"
-		for _, f := range files {
-			ext := strings.ToLower(filepath.Ext(f))
-			if ext == ".mp4" || ext == ".mov" {
-				mType = "video"
-			}
-		}
-		return files, mType, nil
+	bestFiles, mediaType := selectBestMedia(files)
+	if len(bestFiles) > 0 {
+		return bestFiles, mediaType, nil
 	}
 
-	// fallback to gallery-dl
-	run(galleryDlPath, "-d", downloadsDir, link)
+	// fallback to gallery-dl (images)
+	gOut, gErr := run(galleryDlPath, "-d", downloadsDir, link)
+	if gErr != nil {
+		log.Printf("gallery-dl error: %v\noutput:\n%s", gErr, gOut)
+	} else {
+		log.Printf("gallery-dl output:\n%s", gOut)
+	}
 	files = recentFiles(start)
-	if len(files) > 0 {
-		return files, "image", nil
+	bestFiles, mediaType = selectBestMedia(files)
+	if len(bestFiles) > 0 {
+		return bestFiles, mediaType, nil
 	}
 
-	return nil, "", fmt.Errorf("download failed")
+	return nil, "", fmt.Errorf("download failed (yt-dlp/gallery-dl produced no files)")
 }
 
 // ============================================================
@@ -220,14 +236,70 @@ func run(cmd string, args ...string) (string, error) {
 // ============================================================
 func recentFiles(since time.Time) []string {
 	var files []string
-	filepath.Walk(downloadsDir, func(p string, info os.FileInfo, _ error) error {
-		if info != nil && !info.IsDir() && info.ModTime().After(since) {
+	_ = filepath.Walk(downloadsDir, func(p string, info os.FileInfo, _ error) error {
+		if info != nil && !info.IsDir() && info.ModTime().After(since) && info.Size() >= minFileSizeBytes {
 			files = append(files, p)
 		}
 		return nil
 	})
 	sort.Strings(files)
 	return files
+}
+
+// ============================================================
+//                     SELECT BEST MEDIA FILES
+// ============================================================
+// Choose the main video if present (largest video). Otherwise return images (all).
+func selectBestMedia(paths []string) ([]string, string) {
+	if len(paths) == 0 {
+		return nil, ""
+	}
+
+	// normalize extension lists
+	videoExts := map[string]bool{
+		".mp4": true, ".mov": true, ".webm": true, ".mkv": true,
+		".flv": true, ".avi": true, ".mpg": true, ".mpeg": true, ".m4v": true, ".3gp": true,
+	}
+	imgExts := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true,
+	}
+
+	// find largest video file
+	var largestVideo string
+	var largestVideoSize int64
+	var images []string
+	for _, p := range paths {
+		ext := strings.ToLower(filepath.Ext(p))
+		info, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if videoExts[ext] {
+			if info.Size() > largestVideoSize {
+				largestVideoSize = info.Size()
+				largestVideo = p
+			}
+		}
+		if imgExts[ext] {
+			images = append(images, p)
+		}
+	}
+
+	if largestVideo != "" {
+		// return single best video file
+		return []string{largestVideo}, "video"
+	}
+
+	// if no video, but images present, return images (as separate files)
+	if len(images) > 0 {
+		// sort images by name (stable)
+		sort.Strings(images)
+		return images, "image"
+	}
+
+	// fallback: if nothing classified, return all files as documents
+	sort.Strings(paths)
+	return paths, "file"
 }
 
 // ============================================================
@@ -244,7 +316,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int,
 	size := fi.Size()
 	ext := strings.ToLower(filepath.Ext(filePath))
 
-	videoExts := map[string]bool{".mp4": true, ".mov": true, ".webm": true, ".mkv": true}
+	videoExts := map[string]bool{".mp4": true, ".mov": true, ".webm": true, ".mkv": true, ".flv": true, ".avi": true, ".mpg": true, ".mpeg": true, ".m4v": true, ".3gp": true}
 	imgExts := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true}
 	gifExts := map[string]bool{".gif": true}
 
@@ -258,6 +330,8 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int,
 			size = fi.Size()
 			ext = ".mp4"
 			mediaType = "video"
+		} else {
+			log.Printf("convertToMP4 failed: %v", err)
 		}
 	}
 
@@ -270,6 +344,8 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int,
 				filePath = tmp
 				fi, _ = os.Stat(filePath)
 				size = fi.Size()
+			} else {
+				log.Printf("compressVideoToLimit couldn't compress below limit: %v", err)
 			}
 		}
 
@@ -277,6 +353,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int,
 		if size > telegramMaxFileSize {
 			url, err := uploadToTransferSh(filePath)
 			if err != nil {
+				log.Printf("uploadToTransferSh failed: %v", err)
 				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Fayl juda katta va yuklab bo‘lmadi."))
 			} else {
 				bot.Send(tgbotapi.NewMessage(chatID,
@@ -290,11 +367,15 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int,
 		v.Caption = caption
 		v.ReplyToMessageID = replyTo
 		if _, err := bot.Send(v); err != nil {
-			// Fallback
+			log.Printf("Send video failed: %v", err)
+			// Fallback to document
 			d := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 			d.Caption = caption
 			d.ReplyToMessageID = replyTo
-			bot.Send(d)
+			if _, err := bot.Send(d); err != nil {
+				log.Printf("Fallback send document failed: %v", err)
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Mediani yuborishda xatolik yuz berdi."))
+			}
 		}
 		return
 	}
@@ -305,10 +386,14 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int,
 		p.Caption = caption
 		p.ReplyToMessageID = replyTo
 		if _, err := bot.Send(p); err != nil {
+			log.Printf("Send photo failed: %v", err)
 			d := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 			d.Caption = caption
 			d.ReplyToMessageID = replyTo
-			bot.Send(d)
+			if _, err := bot.Send(d); err != nil {
+				log.Printf("Send photo fallback failed: %v", err)
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Rasmni yuborishda xatolik yuz berdi."))
+			}
 		}
 		return
 	}
@@ -317,7 +402,10 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int,
 	d := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 	d.Caption = caption
 	d.ReplyToMessageID = replyTo
-	bot.Send(d)
+	if _, err := bot.Send(d); err != nil {
+		log.Printf("Send document failed: %v", err)
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Faylni yuborishda xatolik yuz berdi."))
+	}
 }
 
 // ============================================================
@@ -326,7 +414,8 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, filePath string, replyTo int,
 func convertToMP4(in, out string) error {
 	args := []string{
 		"-y", "-i", in,
-		"-vf", fmt.Sprintf("scale='min(iw,ih)*min(1,%d/ih)':-2", maxVideoHeight),
+		// scale by height limit (preserve aspect)
+		"-vf", fmt.Sprintf("scale='if(gt(iw,ih),-2,%d)':'if(gt(ih,iw),-2,%d)'", maxVideoHeight, maxVideoHeight),
 		"-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
 		"-c:a", "aac", "-b:a", "128k",
 		out,
@@ -339,19 +428,21 @@ func compressVideoToLimit(in, out string, limit int64) error {
 	for crf := 28; crf <= 46; crf += 2 {
 		args := []string{
 			"-y", "-i", in,
-			"-vf", fmt.Sprintf("scale='min(iw,ih)*min(1,%d/ih)':-2", maxVideoHeight),
+			"-vf", fmt.Sprintf("scale='if(gt(iw,ih),-2,%d)':'if(gt(ih,iw),-2,%d)'", maxVideoHeight, maxVideoHeight),
 			"-c:v", "libx264", "-preset", "veryfast", "-crf", strconv.Itoa(crf),
 			"-c:a", "aac", "-b:a", "96k",
 			out,
 		}
 		_, err := run(ffmpegPath, args...)
 		if err != nil {
+			log.Printf("ffmpeg attempt crf=%d failed: %v", crf, err)
 			continue
 		}
 		fi, err := os.Stat(out)
 		if err == nil && fi.Size() <= limit {
 			return nil
 		}
+		// otherwise try next crf
 	}
 	return fmt.Errorf("cannot compress enough")
 }

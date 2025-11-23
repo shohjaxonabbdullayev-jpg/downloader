@@ -48,21 +48,22 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	log.Printf("🤖 Bot started as @%s", bot.Self.UserName)
 
-	// Health check
+	// health check
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("OK"))
 		})
-		log.Printf("💚 Health: %s", port)
+		log.Println("💚 Health:", port)
 		http.ListenAndServe(":"+port, nil)
 	}()
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	updates := bot.GetUpdatesChan(u)
 
+	updates := bot.GetUpdatesChan(u)
 	for update := range updates {
 		if update.Message != nil {
 			go handleMessage(bot, update.Message)
@@ -114,9 +115,10 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 func extractLinks(text string) []string {
 	re := regexp.MustCompile(`https?://\S+`)
-	found := re.FindAllString(text, -1)
+	all := re.FindAllString(text, -1)
 	var out []string
-	for _, u := range found {
+
+	for _, u := range all {
 		if isSupported(u) {
 			out = append(out, u)
 		}
@@ -125,7 +127,7 @@ func extractLinks(text string) []string {
 }
 
 func isSupported(u string) bool {
-	u = strings.toLower(u)
+	u = strings.ToLower(u)
 	return strings.Contains(u, "instagram") ||
 		strings.Contains(u, "tiktok") ||
 		strings.Contains(u, "pinterest") ||
@@ -139,9 +141,8 @@ func download(link string) ([]string, string, error) {
 	start := time.Now()
 
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
-	var args []string
 
-	args = []string{
+	args := []string{
 		"--no-warnings",
 		"-f", "bestvideo+bestaudio/best",
 		"--merge-output-format", "mp4",
@@ -153,24 +154,23 @@ func download(link string) ([]string, string, error) {
 
 	files := recentFiles(start)
 	if len(files) > 0 {
-		mediaType := detectMediaType(files)
-		return files, mediaType, nil
+		return files, detectMediaType(files), nil
 	}
 
-	// fallback gallery-dl
+	// fallback
 	run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
 		return files, "image", nil
 	}
 
-	return nil, "", fmt.Errorf("download failed")
+	return nil, "", fmt.Errorf("failed")
 }
 
 func detectMediaType(files []string) string {
 	for _, f := range files {
 		ext := strings.ToLower(filepath.Ext(f))
-		if ext == ".mp4" || ext == ".mov" || ext == ".mkv" {
+		if ext == ".mp4" || ext == ".mkv" || ext == ".mov" {
 			return "video"
 		}
 	}
@@ -179,11 +179,11 @@ func detectMediaType(files []string) string {
 
 func run(cmd string, args ...string) (string, error) {
 	c := exec.Command(cmd, args...)
-	var buf bytes.Buffer
-	c.Stdout = &buf
-	c.Stderr = &buf
+	var b bytes.Buffer
+	c.Stdout = &b
+	c.Stderr = &b
 	err := c.Run()
-	return buf.String(), err
+	return b.String(), err
 }
 
 func recentFiles(since time.Time) []string {
@@ -221,10 +221,11 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		return
 	}
 
-	// ================= BUTTONS =================
-	btnShare := tgbotapi.NewInlineKeyboardButtonSwitch(
+	// =============== BUTTONS ===============
+
+	btnShare := tgbotapi.NewInlineKeyboardButtonSwitchInlineQuery(
 		"📤 Do‘stlar bilan ulashish",
-		fmt.Sprintf("https://t.me/%s", bot.Self.UserName),
+		"", // required empty string for inline sharing
 	)
 
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL(
@@ -232,10 +233,11 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
 	)
 
-	kb := tgbotapi.NewInlineKeyboardMarkup(
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(btnShare),
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
 
-	bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, kb))
+	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, keyboard)
+	bot.Send(edit)
 }

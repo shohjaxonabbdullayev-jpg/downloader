@@ -1,37 +1,41 @@
-# 1. Use official Go image for build
-FROM golang:1.21-alpine AS builder
+# =========================
+# Stage 1: Build Go binary
+# =========================
+FROM golang:1.24-alpine AS builder
 
-# Install git for fetching modules
-RUN apk add --no-cache git
+# Install build dependencies
+RUN apk add --no-cache git bash ca-certificates build-base
 
 WORKDIR /app
 
-# Copy go.mod and go.sum first for caching
+# Copy go.mod and go.sum first (for caching)
 COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy the rest of the source code
 COPY . .
 
-# Build Go binary for Linux (no CGO)
+# Build Go binary (statically linked)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o downloader-bot .
 
-# ===================== Final Image =====================
+# =========================
+# Stage 2: Create minimal image
+# =========================
 FROM alpine:3.18
 
-# Install dependencies for running your bot
-RUN apk add --no-cache bash ca-certificates ffmpeg python3 py3-pip
+# Install runtime dependencies
+RUN apk add --no-cache bash ca-certificates ffmpeg python3 py3-pip yt-dlp gallery-dl
 
 WORKDIR /app
+
+# Copy Go binary from builder
 COPY --from=builder /app/downloader-bot .
 
-# Copy downloads folder (optional)
-RUN mkdir downloads
+# Copy any other assets if needed (optional)
+# COPY ./downloads ./downloads
 
-# Expose port if using webhooks/health
+# Expose port if needed (for webhooks/health checks)
 EXPOSE 8080
 
-# Set environment variable for Telegram token
-ENV BOT_TOKEN=your-bot-token
-
+# Start the bot
 CMD ["./downloader-bot"]

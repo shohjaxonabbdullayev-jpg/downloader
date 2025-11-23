@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -18,16 +18,11 @@ import (
 )
 
 const (
-	ffmpegPath     = "ffmpeg"
-	ytDlpPath      = "yt-dlp"
-	galleryDlPath  = "gallery-dl"
-	maxVideoHeight = 720
+	downloadsDir = "downloads"
+	rapidAPIKey  = "e8ca5c51fcmsh1fe3e62d1239314p13f76cjsnfba3e0644676"
 )
 
-var (
-	downloadsDir = "downloads"
-	sem          = make(chan struct{}, 1) // only 1 download at a time
-)
+var sem = make(chan struct{}, 1) // sequential downloads
 
 func main() {
 	_ = godotenv.Load()
@@ -50,7 +45,6 @@ func main() {
 	}
 	log.Printf("🤖 Bot started as @%s", bot.Self.UserName)
 
-	// Health check
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("OK"))
@@ -77,7 +71,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID,
-			fmt.Sprintf("👋 Salom %s!\n\n🎥 Menga Instagram, TikTok, Pinterest, Facebook yoki YouTube/X link yuboring – men videoni yoki rasmni yuklab beraman.",
+			fmt.Sprintf("👋 Salom %s!\n\n🎥 Menga link yuboring – men videoni yoki rasmni yuklab beraman.",
 				msg.From.FirstName)))
 		return
 	}
@@ -89,13 +83,12 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
 
-	// Sequential download
+	// sequential download
 	for _, link := range links {
 		sem <- struct{}{}
 		files, mediaType, err := download(link)
 		<-sem
 
-		// Delete loading message
 		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 			ChatID:    chatID,
 			MessageID: waitMsg.MessageID,
@@ -142,25 +135,94 @@ func isSupported(u string) bool {
 // ===================== DOWNLOAD =====================
 func download(link string) ([]string, string, error) {
 	start := time.Now()
-	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
 
-	args := []string{
-		"--no-warnings",
-		"-f", "bestvideo+bestaudio/best",
-		"--merge-output-format", "mp4",
-		"-o", out,
-		link,
+	if strings.Contains(link, "youtube") || strings.Contains(link, "youtu.be") {
+		return downloadYouTube(link)
 	}
 
-	run(ytDlpPath, args...)
+	// fallback yt-dlp or gallery-dl for other links
+	return downloadOther(link, start)
+}
+
+// ===================== YOUTUBE DOWNLOAD (RAPIDAPI) =====================
+func downloadYouTube(link string) ([]string, string, error) {
+	videoID := extractYouTubeID(link)
+	if videoID == "" {
+		return nil, "", fmt.Errorf("invalid YouTube link")
+	}
+
+	var url string
+	if strings.Contains(link, "shorts") {
+		url = fmt.Sprintf("https://youtube-video-fast-downloader-24-7.p.rapidapi.com/download_short/%s?quality=247", videoID)
+	} else {
+		url = fmt.Sprintf("https://youtube-video-fast-downloader-24-7.p.rapidapi.com/download_video/%s?quality=247", videoID)
+	}
+
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Add("x-rapidapi-host", "youtube-video-fast-downloader-24-7.p.rapidapi.com")
+	req.Header.Add("x-rapidapi-key", rapidAPIKey)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, "", fmt.Errorf("RapidAPI error: %s", resp.Status)
+	}
+
+	var data struct {
+		Link string `json:"link"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, "", err
+	}
+
+	// download file
+	filename := filepath.Join(downloadsDir, videoID+".mp4")
+	outFile, err := os.Create(filename)
+	if err != nil {
+		return nil, "", err
+	}
+	defer outFile.Close()
+
+	resp2, err := http.Get(data.Link)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp2.Body.Close()
+
+	_, err = io.Copy(outFile, resp2.Body)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return []string{filename}, "video", nil
+}
+
+func extractYouTubeID(link string) string {
+	re := regexp.MustCompile(`(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})`)
+	m := re.FindStringSubmatch(link)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
+}
+
+// ===================== OTHER DOWNLOADS =====================
+func downloadOther(link string, start time.Time) ([]string, string, error) {
+	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title)s.%%(ext)s", time.Now().Unix()))
+	run("yt-dlp", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out, link)
 
 	files := recentFiles(start)
 	if len(files) > 0 {
 		return files, detectMediaType(files), nil
 	}
 
-	// fallback gallery-dl
-	run(galleryDlPath, "-d", downloadsDir, link)
+	run("gallery-dl", "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
 		return files, "image", nil
@@ -177,15 +239,6 @@ func detectMediaType(files []string) string {
 		}
 	}
 	return "image"
-}
-
-func run(cmd string, args ...string) (string, error) {
-	c := exec.Command(cmd, args...)
-	var buf bytes.Buffer
-	c.Stdout = &buf
-	c.Stderr = &buf
-	err := c.Run()
-	return buf.String(), err
 }
 
 func recentFiles(since time.Time) []string {
@@ -224,21 +277,17 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		return
 	}
 
-	// ================= BUTTONS =================
 	btnShare := tgbotapi.NewInlineKeyboardButtonURL(
 		"📤 Do‘stlar bilan ulashish",
 		fmt.Sprintf("https://t.me/%s", bot.Self.UserName),
 	)
-
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL(
 		"👥 Guruhga qo‘shish",
 		fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
 	)
-
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(btnShare),
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
-
 	bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, kb))
 }

@@ -63,4 +63,3 @@ HEALTHCHECK CMD curl -f http://localhost:${PORT}/health || exit 1
 
 # Run bot
 CMD ["/app/downloader-bot"]
-update it

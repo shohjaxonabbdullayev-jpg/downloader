@@ -45,6 +45,7 @@ func main() {
 	}
 	log.Printf("🤖 Bot started as @%s", bot.Self.UserName)
 
+	// Health check
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("OK"))
@@ -83,9 +84,8 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
 
-	// sequential download
 	for _, link := range links {
-		sem <- struct{}{}
+		sem <- struct{}{} // lock sequential download
 		files, mediaType, err := download(link)
 		<-sem
 
@@ -144,22 +144,17 @@ func download(link string) ([]string, string, error) {
 	return downloadOther(link, start)
 }
 
-// ===================== YOUTUBE DOWNLOAD (RAPIDAPI) =====================
+// ===================== YOUTUBE DOWNLOAD (YTSTREAM RAPIDAPI) =====================
 func downloadYouTube(link string) ([]string, string, error) {
 	videoID := extractYouTubeID(link)
 	if videoID == "" {
 		return nil, "", fmt.Errorf("invalid YouTube link")
 	}
 
-	var url string
-	if strings.Contains(link, "shorts") {
-		url = fmt.Sprintf("https://youtube-video-fast-downloader-24-7.p.rapidapi.com/download_short/%s?quality=247", videoID)
-	} else {
-		url = fmt.Sprintf("https://youtube-video-fast-downloader-24-7.p.rapidapi.com/download_video/%s?quality=247", videoID)
-	}
+	url := fmt.Sprintf("https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id=%s", videoID)
 
 	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Add("x-rapidapi-host", "youtube-video-fast-downloader-24-7.p.rapidapi.com")
+	req.Header.Add("x-rapidapi-host", "ytstream-download-youtube-videos.p.rapidapi.com")
 	req.Header.Add("x-rapidapi-key", rapidAPIKey)
 
 	client := &http.Client{}
@@ -174,11 +169,28 @@ func downloadYouTube(link string) ([]string, string, error) {
 	}
 
 	var data struct {
-		Link string `json:"link"`
+		Formats []struct {
+			URL      string `json:"url"`
+			Quality  string `json:"quality"`
+			MimeType string `json:"mimeType"`
+		} `json:"formats"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, "", err
+	}
+
+	// Pick 720p mp4 if available
+	var downloadURL string
+	for _, f := range data.Formats {
+		if f.Quality == "720p" && strings.Contains(f.MimeType, "video/mp4") {
+			downloadURL = f.URL
+			break
+		}
+	}
+	if downloadURL == "" && len(data.Formats) > 0 {
+		// fallback to highest quality available
+		downloadURL = data.Formats[len(data.Formats)-1].URL
 	}
 
 	// download file
@@ -189,7 +201,7 @@ func downloadYouTube(link string) ([]string, string, error) {
 	}
 	defer outFile.Close()
 
-	resp2, err := http.Get(data.Link)
+	resp2, err := http.Get(downloadURL)
 	if err != nil {
 		return nil, "", err
 	}
@@ -291,3 +303,4 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 	)
 	bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, kb))
 }
+

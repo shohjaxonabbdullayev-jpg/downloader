@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +26,7 @@ const (
 
 var (
 	downloadsDir = "downloads"
-	sem          = make(chan struct{}, 1) // only 1 concurrent download
+	sem          = make(chan struct{}, 1) // only 1 download at a time
 )
 
 func main() {

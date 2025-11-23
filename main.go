@@ -26,7 +26,6 @@ const (
 
 var (
 	downloadsDir = "downloads"
-	sem          = make(chan struct{}, 3)
 )
 
 func main() {
@@ -50,6 +49,7 @@ func main() {
 	}
 	log.Printf("🤖 Bot started as @%s", bot.Self.UserName)
 
+	// Health check
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("OK"))
@@ -85,14 +85,11 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		return
 	}
 
-	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
+	loadingMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
 
-	// Process links sequentially to prevent media mix
+	// Sequential processing: download one link at a time in order
 	for _, link := range links {
-		sem <- struct{}{}
 		files, mediaType, err := download(link)
-		<-sem
-
 		if err != nil || len(files) == 0 {
 			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Yuklab bo‘lmadi: %s", link)))
 			continue
@@ -107,7 +104,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	// Delete the "loading" message
 	_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 		ChatID:    chatID,
-		MessageID: waitMsg.MessageID,
+		MessageID: loadingMsg.MessageID,
 	})
 }
 
@@ -216,7 +213,7 @@ func sendMediaWithButtons(bot *tgbotapi.BotAPI, chatID int64, file, mediaType st
 		return
 	}
 
-	// Inline buttons attached to this specific message
+	// Buttons for sharing bot link & adding to group
 	btnShare := tgbotapi.NewInlineKeyboardButtonURL(
 		"📤 Do‘stlar bilan ulashish",
 		fmt.Sprintf("https://t.me/%s", bot.Self.UserName),
@@ -225,6 +222,7 @@ func sendMediaWithButtons(bot *tgbotapi.BotAPI, chatID int64, file, mediaType st
 		"👥 Guruhga qo‘shish",
 		fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
 	)
+
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(btnShare),
 		tgbotapi.NewInlineKeyboardRow(btnGroup),

@@ -26,7 +26,7 @@ const (
 
 var (
 	downloadsDir = "downloads"
-	sem          = make(chan struct{}, 3) // limit concurrency
+	sem          = make(chan struct{}, 3)
 )
 
 func main() {
@@ -89,7 +89,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
 
-	// Process links sequentially to avoid race conditions
+	// Process each link sequentially to prevent media mix-up
 	for _, link := range links {
 		sem <- struct{}{}
 		files, mediaType, err := download(link)
@@ -101,13 +101,13 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		}
 
 		for _, f := range files {
-			// Each media gets its own message
-			sendMedia(bot, chatID, f, 0, mediaType)
+			// send each file individually
+			sendMedia(bot, chatID, f, mediaType)
 			os.Remove(f)
 		}
 	}
 
-	// Delete loading message
+	// delete loading message
 	_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 		ChatID:    chatID,
 		MessageID: waitMsg.MessageID,
@@ -158,7 +158,6 @@ func download(link string) ([]string, string, error) {
 		return files, detectMediaType(files), nil
 	}
 
-	// fallback gallery-dl
 	run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
@@ -200,7 +199,7 @@ func recentFiles(since time.Time) []string {
 }
 
 // ===================== SEND MEDIA =====================
-func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, mediaType string) {
+func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, mediaType string) {
 	caption := "@downloaderin123_bot orqali yuklab olindi"
 
 	var msg tgbotapi.Message
@@ -209,16 +208,10 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 	if mediaType == "video" {
 		v := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(file))
 		v.Caption = caption
-		if replyTo != 0 {
-			v.ReplyToMessageID = replyTo
-		}
 		msg, err = bot.Send(v)
 	} else {
 		p := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(file))
 		p.Caption = caption
-		if replyTo != 0 {
-			p.ReplyToMessageID = replyTo
-		}
 		msg, err = bot.Send(p)
 	}
 
@@ -232,12 +225,10 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		"📤 Do‘stlar bilan ulashish",
 		fmt.Sprintf("https://t.me/%s", bot.Self.UserName),
 	)
-
 	btnGroup := tgbotapi.NewInlineKeyboardButtonURL(
 		"👥 Guruhga qo‘shish",
 		fmt.Sprintf("https://t.me/%s?startgroup=true", bot.Self.UserName),
 	)
-
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(btnShare),
 		tgbotapi.NewInlineKeyboardRow(btnGroup),

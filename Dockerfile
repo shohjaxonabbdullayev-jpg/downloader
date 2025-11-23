@@ -5,61 +5,70 @@ FROM golang:1.24.4 AS builder
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
+# Install minimal build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 # Download Go modules
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy app source
+# Copy entire source
 COPY . .
 
-# Build Go binary
-RUN go build -o downloader-bot .
+# Build optimized binary
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o downloader-bot .
+
 
 # ==============================
-# 🚀 STAGE 2 — Final lightweight image
+# 🚀 STAGE 2 — Final runtime image
 # ==============================
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ffmpeg \
-        python3-full \
-        python3-pip \
-        ca-certificates \
-        curl \
-        wget \
-        git && \
+WORKDIR /app
+
+# Install runtime dependencies (minimal)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    python3 \
+    python3-venv \
+    python3-pip \
+    curl \
+    ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Install Python packages yt-dlp and gallery-dl in isolated venv
+
+# ============================
+# 📦 Install yt-dlp + gallery-dl
+# ============================
+
 RUN python3 -m venv /opt/yt && \
     /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
     ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
     ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
 
-# Create app directory
-WORKDIR /app
 
-# Copy Go binary
+# ====================================
+# 🗂 Copy binary & static template files
+# ====================================
 COPY --from=builder /app/downloader-bot .
-COPY twitter.txt ./twitter.txt
-COPY facebook.txt ./facebook.txt
-COPY instagram.txt ./instagram.txt
-COPY youtube.txt ./youtube.txt
-COPY pinterest.txt ./pinterest.txt
-RUN mkdir -p downloads
+COPY *.txt ./
 
-# Environment variables
+# Create downloads directory
+RUN mkdir -p downloads && chmod -R 777 downloads
+
+
+# =======================
+# 🌍 Environment & health
+# =======================
 ENV PORT=10000
 EXPOSE 10000
 
-# Health check
 HEALTHCHECK CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run bot
+
+# =======================
+# ▶️ Start the bot
+# =======================
 CMD ["/app/downloader-bot"]

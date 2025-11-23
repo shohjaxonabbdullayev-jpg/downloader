@@ -89,29 +89,29 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
 
+	// Process links sequentially to avoid race conditions
 	for _, link := range links {
-		go func(l string) {
-			sem <- struct{}{}
-			files, mediaType, err := download(l)
-			<-sem
+		sem <- struct{}{}
+		files, mediaType, err := download(link)
+		<-sem
 
-			// Delete loading message
-			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
-				ChatID:    chatID,
-				MessageID: waitMsg.MessageID,
-			})
+		if err != nil || len(files) == 0 {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Yuklab bo‘lmadi: %s", link)))
+			continue
+		}
 
-			if err != nil || len(files) == 0 {
-				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Yuklab bo‘lmadi. Linkni tekshiring."))
-				return
-			}
-
-			for _, f := range files {
-				sendMedia(bot, chatID, f, msg.MessageID, mediaType)
-				os.Remove(f)
-			}
-		}(link)
+		for _, f := range files {
+			// Each media gets its own message
+			sendMedia(bot, chatID, f, 0, mediaType)
+			os.Remove(f)
+		}
 	}
+
+	// Delete loading message
+	_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    chatID,
+		MessageID: waitMsg.MessageID,
+	})
 }
 
 // ===================== LINK PARSING =====================
@@ -209,12 +209,16 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 	if mediaType == "video" {
 		v := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(file))
 		v.Caption = caption
-		v.ReplyToMessageID = replyTo
+		if replyTo != 0 {
+			v.ReplyToMessageID = replyTo
+		}
 		msg, err = bot.Send(v)
 	} else {
 		p := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(file))
 		p.Caption = caption
-		p.ReplyToMessageID = replyTo
+		if replyTo != 0 {
+			p.ReplyToMessageID = replyTo
+		}
 		msg, err = bot.Send(p)
 	}
 
@@ -239,5 +243,9 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
 
-	bot.Send(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, kb))
+	_, _ = bot.Request(tgbotapi.NewEditMessageReplyMarkup(
+		chatID,
+		msg.MessageID,
+		kb,
+	))
 }

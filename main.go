@@ -34,7 +34,7 @@ func main() {
 
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
-		log.Fatal("❌ BOT_TOKEN missing in .env")
+		log.Fatal("❌ BOT_TOKEN missing")
 	}
 
 	port := os.Getenv("PORT")
@@ -50,13 +50,11 @@ func main() {
 	}
 	log.Printf("🤖 Bot started as @%s", bot.Self.UserName)
 
-	// Health check
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("OK"))
 		})
-		log.Printf("💚 Health check on port %s", port)
-		http.ListenAndServe(":"+port, nil)
+		log.Fatal(http.ListenAndServe(":"+port, nil))
 	}()
 
 	u := tgbotapi.NewUpdate(0)
@@ -77,7 +75,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(chatID,
-			fmt.Sprintf("👋 Salom %s!\n\n🎥 Menga Instagram, TikTok, Pinterest, Facebook yoki Twitter link yuboring – men videoni yoki rasmni yuklab beraman.",
+			fmt.Sprintf("👋 Salom %s!\n\n🎥 Link yuboring: Instagram, TikTok, Pinterest, Facebook yoki Twitter – men videoni yoki rasmni yuklab beraman.",
 				msg.From.FirstName)))
 		return
 	}
@@ -89,7 +87,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
 
-	// Process each link sequentially to prevent media mix-up
+	// Process links sequentially to prevent media mix
 	for _, link := range links {
 		sem <- struct{}{}
 		files, mediaType, err := download(link)
@@ -101,13 +99,12 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		}
 
 		for _, f := range files {
-			// send each file individually
-			sendMedia(bot, chatID, f, mediaType)
+			sendMediaWithButtons(bot, chatID, f, mediaType)
 			os.Remove(f)
 		}
 	}
 
-	// delete loading message
+	// Delete the "loading" message
 	_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 		ChatID:    chatID,
 		MessageID: waitMsg.MessageID,
@@ -152,7 +149,6 @@ func download(link string) ([]string, string, error) {
 	}
 
 	run(ytDlpPath, args...)
-
 	files := recentFiles(start)
 	if len(files) > 0 {
 		return files, detectMediaType(files), nil
@@ -198,8 +194,8 @@ func recentFiles(since time.Time) []string {
 	return files
 }
 
-// ===================== SEND MEDIA =====================
-func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, mediaType string) {
+// ===================== SEND MEDIA WITH BUTTONS =====================
+func sendMediaWithButtons(bot *tgbotapi.BotAPI, chatID int64, file, mediaType string) {
 	caption := "@downloaderin123_bot orqali yuklab olindi"
 
 	var msg tgbotapi.Message
@@ -220,7 +216,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, mediaType string
 		return
 	}
 
-	// ================= BUTTONS =================
+	// Inline buttons attached to this specific message
 	btnShare := tgbotapi.NewInlineKeyboardButtonURL(
 		"📤 Do‘stlar bilan ulashish",
 		fmt.Sprintf("https://t.me/%s", bot.Self.UserName),
@@ -234,9 +230,5 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, mediaType string
 		tgbotapi.NewInlineKeyboardRow(btnGroup),
 	)
 
-	_, _ = bot.Request(tgbotapi.NewEditMessageReplyMarkup(
-		chatID,
-		msg.MessageID,
-		kb,
-	))
+	_, _ = bot.Request(tgbotapi.NewEditMessageReplyMarkup(chatID, msg.MessageID, kb))
 }

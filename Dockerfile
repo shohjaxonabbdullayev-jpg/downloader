@@ -1,41 +1,66 @@
-# =========================
-# Stage 1: Build Go binary
-# =========================
-FROM golang:1.24-alpine AS builder
-
-# Install build dependencies
-RUN apk add --no-cache git bash ca-certificates build-base
+# ============================
+# 🏗️ STAGE 1 — Build Go binary
+# ============================
+FROM golang:1.24.4 AS builder
 
 WORKDIR /app
 
-# Copy go.mod and go.sum first (for caching)
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download Go modules
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the rest of the source code
+# Copy app source
 COPY . .
 
-# Build Go binary (statically linked)
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o downloader-bot .
+# Build Go binary
+RUN go build -o downloader-bot .
 
-# =========================
-# Stage 2: Create minimal image
-# =========================
-FROM alpine:3.18
+# ==============================
+# 🚀 STAGE 2 — Final lightweight image
+# ==============================
+FROM debian:bookworm-slim
 
 # Install runtime dependencies
-RUN apk add --no-cache bash ca-certificates ffmpeg python3 py3-pip yt-dlp gallery-dl
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        python3-full \
+        python3-pip \
+        ca-certificates \
+        curl \
+        wget \
+        git && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# ✅ Install Python packages yt-dlp and gallery-dl in isolated venv
+RUN python3 -m venv /opt/yt && \
+    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
+    ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
+    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
+
+# Create app directory
 WORKDIR /app
 
-# Copy Go binary from builder
+# Copy Go binary
 COPY --from=builder /app/downloader-bot .
+COPY twitter.txt ./twitter.txt
+COPY facebook.txt ./facebook.txt
+COPY instagram.txt ./instagram.txt
+COPY youtube.txt ./youtube.txt
+COPY pinterest.txt ./pinterest.txt
+RUN mkdir -p downloads
 
-# Copy any other assets if needed (optional)
-# COPY ./downloads ./downloads
+# Environment variables
+ENV PORT=10000
+EXPOSE 10000
 
-# Expose port if needed (for webhooks/health checks)
-EXPOSE 8080
+# Health check
+HEALTHCHECK CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Start the bot
-CMD ["./downloader-bot"]
+# Run bot
+CMD ["/app/downloader-bot"]
+update it

@@ -3,23 +3,14 @@
 # This is a generated file!  Do not edit.
 
 .instagram.com	TRUE	/	TRUE	1765904884	datr	9DkyZwnEJjfC6yVLqd03Luqb
-.instagram.com	TRUE	/	TRUE	1771222814	ds_user_id	57288693839
+.instagram.com	TRUE	/	TRUE	1772769766	ds_user_id	57288693839
 .instagram.com	TRUE	/	TRUE	1787467146	mid	aHs9igALAAGVQohc7PDmZZQhKb7Z
 .instagram.com	TRUE	/	TRUE	1787467148	ps_l	1
 .instagram.com	TRUE	/	TRUE	1787467148	ps_n	1
-.instagram.com	TRUE	/	TRUE	1798006814	csrftoken	eocwwQapIcnYZwHYa1BTjWZnazDPeYKc
-sssinstagram.com	FALSE	/	FALSE	1795678577	uid	7b5308e42eb85802
-.sssinstagram.com	TRUE	/	FALSE	1795682203	_ga	GA1.1.90545103.1761118578
-sssinstagram.com	FALSE	/	FALSE	1763710578	errorFallbackPopup	6
-sssinstagram.com	FALSE	/	FALSE	1763710578	adsForm	85
-sssinstagram.com	FALSE	/	FALSE	1763710578	adsAfterSearch	67
-sssinstagram.com	FALSE	/	FALSE	1763710578	adsPopupClick	54
-.sssinstagram.com	TRUE	/	FALSE	1795682203	_ga_KDHKH4GDQE	GS2.1.s1761122202$o2$g1$t1761122203$j59$l0$h0
+.instagram.com	TRUE	/	TRUE	1799553766	csrftoken	eocwwQapIcnYZwHYa1BTjWZnazDPeYKc
 .sssinstagram.com	TRUE	/	TRUE	1794814578	__gads	ID=9a5ca274c62de257:T=1761118578:RT=1761122203:S=ALNI_MaOlquJ3V8xLc8WYUYLhhlW-kFOyg
 .sssinstagram.com	TRUE	/	TRUE	1776670578	__eoi	ID=4e2dc30d69eda6f6:T=1761118578:RT=1761122203:S=AA-AfjZbUtBLkUAqppFyRp09eB6u
-.sssinstagram.com	TRUE	/	FALSE	1792658211	FCNEC	%5B%5B%22AKsRol8ObfgD_9Izegmehk63hD9K6fWsGgqz7SDTC2xlz_g3O7YH3ewjf91TwWNqNY3rAUYbqF52Z6KWZLgaE1_N-ZorzdSoU5jaoOZHTfGB5ZzI0SIoWylNwccjp2TyrncrUTAZ5as4YFmbWl4XS6FEPTaE-ncRfA%3D%3D%22%5D%5D
 .instagram.com	TRUE	/	TRUE	1794648871	ig_did	BB97066B-A59F-40E4-9235-CBE5417BD8BC
-.instagram.com	TRUE	/	TRUE	1763718006	dpr	1.5
-.instagram.com	TRUE	/	TRUE	1764051613	wd	1920x953
-.instagram.com	TRUE	/	TRUE	0	rur	"CLN\05457288693839\0541794982813:01fe7040c5af0bca9f3f970e2afb569b0c486a2a1f276f172ae13bba60efef6acb5be12a"
-.instagram.com	TRUE	/	TRUE	1794982814	sessionid	57288693839%3AQQAOtJVmpd8vHn%3A13%3AAYg4AfkJAtsMWxjmhKMmAr17_keCuPUfCw0mR4kOow
+.instagram.com	TRUE	/	TRUE	1765598561	wd	958x952
+.instagram.com	TRUE	/	TRUE	1796529762	sessionid	57288693839%3Aa1O9ZAkXkDrSgf%3A2%3AAYjTUToygCbAPIa9vgxfPWeF-IBKMdIl7Cyk6yTkzQ
+.instagram.com	TRUE	/	TRUE	0	rur	"CLN\05457288693839\0541796529769:01fe158c7aabba2e7da679362022576c9ed364a679267e5876ec3f43a2ff9629144d46f9"

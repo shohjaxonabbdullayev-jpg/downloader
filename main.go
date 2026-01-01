@@ -51,7 +51,7 @@ func main() {
 
 	log.Printf("Bot started: @%s", bot.Self.UserName)
 
-	// Health check for hosting platforms (Render, Railway, etc.)
+	// Health check (Render / Railway)
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -78,7 +78,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(
 			chatID,
-			"👋 Salom!\n\nInstagram, TikTok, X, Facebook yoki Pinterest link yuboring.\nMen ENG YUQORI sifatda yuklab beraman 🚀",
+			"👋 Salom!\n\nInstagram, TikTok, X, Facebook yoki Pinterest link yuboring.\nENG YUQORI sifatda yuklab beraman 🚀",
 		))
 		return
 	}
@@ -102,32 +102,31 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			<-sem
 
 			if err != nil || len(files) == 0 {
-				bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi: "+link))
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi:\n"+link))
 				continue
 			}
 
 			caption := "⬇️ @downloaderin123_bot"
 
-			// Multiple files → send as album (MediaGroup)
+			// Multiple files → album
 			if len(files) > 1 {
 				var media []interface{}
 				for i, f := range files {
 					if mediaType == "video" {
-						input := tgbotapi.NewInputMediaVideo(tgbotapi.FilePath(f))
-						input.SupportsStreaming = true
+						m := tgbotapi.NewInputMediaVideo(tgbotapi.FilePath(f))
+						m.SupportsStreaming = true
 						if i == 0 {
-							input.Caption = caption
+							m.Caption = caption
 						}
-						media = append(media, input)
+						media = append(media, m)
 					} else {
-						input := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(f))
+						m := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(f))
 						if i == 0 {
-							input.Caption = caption
+							m.Caption = caption
 						}
-						media = append(media, input)
+						media = append(media, m)
 					}
 				}
-
 				album := tgbotapi.NewMediaGroup(chatID, media)
 				album.ReplyToMessageID = msg.MessageID
 				bot.Send(album)
@@ -136,8 +135,8 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 				if mediaType == "video" {
 					v := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(files[0]))
 					v.Caption = caption
-					v.ReplyToMessageID = msg.MessageID
 					v.SupportsStreaming = true
+					v.ReplyToMessageID = msg.MessageID
 					bot.Send(v)
 				} else {
 					p := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(files[0]))
@@ -147,7 +146,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 				}
 			}
 
-			// Cleanup files
+			// Cleanup
 			for _, f := range files {
 				_ = os.Remove(f)
 			}
@@ -185,25 +184,34 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 
-	// Unique output template
-	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title).100s_%%(id)s", time.Now().UnixNano()))
+	out := filepath.Join(
+		downloadsDir,
+		fmt.Sprintf("%d_%%(title).100s_%%(id)s", time.Now().UnixNano()),
+	)
 
 	args := []string{
 		"--no-warnings",
 		"--yes-playlist",
-		// Highest quality, but compatible MP4 (H.264 + AAC)
-		"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-		"--merge-output-format", "mp4",
-		"--postprocessor-args", "ffmpeg:-movflags +faststart",
+
+		// Force iPhone-safe codecs
+		"-f", "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/best",
+		"--recode-video", "mp4",
+
+		// iOS / Telegram compatibility
+		"--postprocessor-args",
+		"ffmpeg:-movflags +faststart -pix_fmt yuv420p -profile:v baseline -level 3.1",
+
+		// Prevent odd resolution (iOS bug)
+		"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+
 		"-o", out + ".%(ext)s",
 		link,
 	}
 
 	applyCookies(&args, link)
 
-	_, errRun := run(ytDlpPath, args...)
-	if errRun != nil {
-		log.Printf("yt-dlp error: %v", errRun)
+	if _, err := run(ytDlpPath, args...); err != nil {
+		log.Println("yt-dlp error:", err)
 	}
 
 	files := recentFiles(start)
@@ -211,14 +219,14 @@ func download(link string) ([]string, string, error) {
 		return files, detectType(files), nil
 	}
 
-	// Fallback for images/carousels
+	// Fallback for image posts
 	_, _ = run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
 		return files, "image", nil
 	}
 
-	return nil, "", fmt.Errorf("download failed for %s", link)
+	return nil, "", fmt.Errorf("download failed")
 }
 
 /* ================= EXEC ================= */

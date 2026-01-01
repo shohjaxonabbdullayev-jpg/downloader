@@ -106,41 +106,48 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 				continue
 			}
 
-			// Send as album if multiple files (e.g., carousel post)
+			caption := "⬇️ @downloaderin123_bot"
+
+			// Multiple files → send as album (MediaGroup)
 			if len(files) > 1 {
-				var mediaGroup []interface{}
+				var media []interface{}
 				for i, f := range files {
-					var inputMedia tgbotapi.InputMedia
 					if mediaType == "video" {
-						inputMedia = tgbotapi.InputMediaVideo{
-							Type:      "video",
-							Media:     tgbotapi.FilePath(f),
-							Caption:   "⬇️ @downloaderin123_bot",
-							ParseMode: "HTML",
+						input := tgbotapi.NewInputMediaVideo(tgbotapi.FilePath(f))
+						input.SupportsStreaming = true
+						if i == 0 {
+							input.Caption = caption
 						}
+						media = append(media, input)
 					} else {
-						inputMedia = tgbotapi.InputMediaPhoto{
-							Type:      "photo",
-							Media:     tgbotapi.FilePath(f),
-							Caption:   "⬇️ @downloaderin123_bot",
-							ParseMode: "HTML",
+						input := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(f))
+						if i == 0 {
+							input.Caption = caption
 						}
+						media = append(media, input)
 					}
-					if i == 0 {
-						inputMedia.SetCaption("⬇️ @downloaderin123_bot")
-					}
-					mediaGroup = append(mediaGroup, inputMedia)
 				}
 
-				album := tgbotapi.NewMediaGroup(chatID, mediaGroup)
+				album := tgbotapi.NewMediaGroup(chatID, media)
 				album.ReplyToMessageID = msg.MessageID
 				bot.Send(album)
 			} else {
 				// Single file
-				sendMedia(bot, chatID, files[0], msg.MessageID, mediaType)
+				if mediaType == "video" {
+					v := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(files[0]))
+					v.Caption = caption
+					v.ReplyToMessageID = msg.MessageID
+					v.SupportsStreaming = true
+					bot.Send(v)
+				} else {
+					p := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(files[0]))
+					p.Caption = caption
+					p.ReplyToMessageID = msg.MessageID
+					bot.Send(p)
+				}
 			}
 
-			// Cleanup
+			// Cleanup files
 			for _, f := range files {
 				_ = os.Remove(f)
 			}
@@ -178,13 +185,13 @@ func isSupported(u string) bool {
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 
-	// Unique temporary template per download
+	// Unique output template
 	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title).100s_%%(id)s", time.Now().UnixNano()))
 
 	args := []string{
 		"--no-warnings",
 		"--yes-playlist",
-		// Prioritize highest quality, compatible MP4 (H.264/AAC), faststart for streaming
+		// Highest quality, but compatible MP4 (H.264 + AAC)
 		"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
 		"--merge-output-format", "mp4",
 		"--postprocessor-args", "ffmpeg:-movflags +faststart",
@@ -204,7 +211,7 @@ func download(link string) ([]string, string, error) {
 		return files, detectType(files), nil
 	}
 
-	// Fallback for image-heavy platforms (Instagram carousels, Pinterest, etc.)
+	// Fallback for images/carousels
 	_, _ = run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
@@ -244,24 +251,6 @@ func detectType(files []string) string {
 		}
 	}
 	return "image"
-}
-
-/* ================= SENDER ================= */
-func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, mediaType string) {
-	caption := "⬇️ @downloaderin123_bot"
-
-	if mediaType == "video" {
-		v := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(file))
-		v.Caption = caption
-		v.ReplyToMessageID = replyTo
-		v.SupportsStreaming = true // Important for smooth playback on high-res videos
-		bot.Send(v)
-	} else {
-		p := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(file))
-		p.Caption = caption
-		p.ReplyToMessageID = replyTo
-		bot.Send(p)
-	}
 }
 
 /* ================= COOKIES ================= */

@@ -18,7 +18,6 @@ import (
 )
 
 /* ================= CONFIG ================= */
-
 const (
 	ytDlpPath     = "yt-dlp"
 	galleryDlPath = "gallery-dl"
@@ -30,7 +29,6 @@ var (
 )
 
 /* ================= MAIN ================= */
-
 func main() {
 	_ = godotenv.Load()
 
@@ -53,7 +51,7 @@ func main() {
 
 	log.Printf("Bot started: @%s", bot.Self.UserName)
 
-	// Health check (Render / Railway)
+	// Health check for hosting platforms (Render, Railway, etc.)
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -73,7 +71,6 @@ func main() {
 }
 
 /* ================= MESSAGE HANDLER ================= */
-
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	text := strings.TrimSpace(msg.Text)
@@ -105,12 +102,46 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 			<-sem
 
 			if err != nil || len(files) == 0 {
-				bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi"))
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi: "+link))
 				continue
 			}
 
+			// Send as album if multiple files (e.g., carousel post)
+			if len(files) > 1 {
+				var mediaGroup []interface{}
+				for i, f := range files {
+					var inputMedia tgbotapi.InputMedia
+					if mediaType == "video" {
+						inputMedia = tgbotapi.InputMediaVideo{
+							Type:      "video",
+							Media:     tgbotapi.FilePath(f),
+							Caption:   "⬇️ @downloaderin123_bot",
+							ParseMode: "HTML",
+						}
+					} else {
+						inputMedia = tgbotapi.InputMediaPhoto{
+							Type:      "photo",
+							Media:     tgbotapi.FilePath(f),
+							Caption:   "⬇️ @downloaderin123_bot",
+							ParseMode: "HTML",
+						}
+					}
+					if i == 0 {
+						inputMedia.SetCaption("⬇️ @downloaderin123_bot")
+					}
+					mediaGroup = append(mediaGroup, inputMedia)
+				}
+
+				album := tgbotapi.NewMediaGroup(chatID, mediaGroup)
+				album.ReplyToMessageID = msg.MessageID
+				bot.Send(album)
+			} else {
+				// Single file
+				sendMedia(bot, chatID, files[0], msg.MessageID, mediaType)
+			}
+
+			// Cleanup
 			for _, f := range files {
-				sendMedia(bot, chatID, f, msg.MessageID, mediaType)
 				_ = os.Remove(f)
 			}
 		}
@@ -118,7 +149,6 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 }
 
 /* ================= LINK PARSER ================= */
-
 func extractLinks(text string) []string {
 	re := regexp.MustCompile(`https?://\S+`)
 	raw := re.FindAllString(text, -1)
@@ -145,46 +175,46 @@ func isSupported(u string) bool {
 }
 
 /* ================= DOWNLOAD ================= */
-
 func download(link string) ([]string, string, error) {
 	start := time.Now()
 
-	out := filepath.Join(
-		downloadsDir,
-		fmt.Sprintf("%d_%%(title).100s_%%(id)s.%%(ext)s", time.Now().Unix()),
-	)
+	// Unique temporary template per download
+	out := filepath.Join(downloadsDir, fmt.Sprintf("%d_%%(title).100s_%%(id)s", time.Now().UnixNano()))
 
 	args := []string{
 		"--no-warnings",
 		"--yes-playlist",
-		"-f", "bestvideo*+bestaudio/best", // 🔥 MAX RESOLUTION
+		// Prioritize highest quality, compatible MP4 (H.264/AAC), faststart for streaming
+		"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
 		"--merge-output-format", "mp4",
 		"--postprocessor-args", "ffmpeg:-movflags +faststart",
-		"-o", out,
+		"-o", out + ".%(ext)s",
 		link,
 	}
 
 	applyCookies(&args, link)
-	_, _ = run(ytDlpPath, args...)
+
+	_, errRun := run(ytDlpPath, args...)
+	if errRun != nil {
+		log.Printf("yt-dlp error: %v", errRun)
+	}
 
 	files := recentFiles(start)
 	if len(files) > 0 {
 		return files, detectType(files), nil
 	}
 
-	// fallback for image platforms
+	// Fallback for image-heavy platforms (Instagram carousels, Pinterest, etc.)
 	_, _ = run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
-
 	if len(files) > 0 {
 		return files, "image", nil
 	}
 
-	return nil, "", fmt.Errorf("download failed")
+	return nil, "", fmt.Errorf("download failed for %s", link)
 }
 
 /* ================= EXEC ================= */
-
 func run(cmd string, args ...string) (string, error) {
 	c := exec.Command(cmd, args...)
 	var buf bytes.Buffer
@@ -194,7 +224,6 @@ func run(cmd string, args ...string) (string, error) {
 }
 
 /* ================= FILE UTILS ================= */
-
 func recentFiles(since time.Time) []string {
 	var files []string
 	filepath.Walk(downloadsDir, func(path string, info os.FileInfo, _ error) error {
@@ -210,7 +239,7 @@ func recentFiles(since time.Time) []string {
 func detectType(files []string) string {
 	for _, f := range files {
 		ext := strings.ToLower(filepath.Ext(f))
-		if ext == ".mp4" || ext == ".mov" {
+		if ext == ".mp4" || ext == ".mov" || ext == ".mkv" {
 			return "video"
 		}
 	}
@@ -218,7 +247,6 @@ func detectType(files []string) string {
 }
 
 /* ================= SENDER ================= */
-
 func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, mediaType string) {
 	caption := "⬇️ @downloaderin123_bot"
 
@@ -226,6 +254,7 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		v := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(file))
 		v.Caption = caption
 		v.ReplyToMessageID = replyTo
+		v.SupportsStreaming = true // Important for smooth playback on high-res videos
 		bot.Send(v)
 	} else {
 		p := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(file))
@@ -236,18 +265,17 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 }
 
 /* ================= COOKIES ================= */
-
 func applyCookies(args *[]string, link string) {
 	add := func(domain, file string) {
 		if strings.Contains(link, domain) && fileExists(file) {
 			*args = append([]string{"--cookies", file}, *args...)
 		}
 	}
-
-	add("instagram", "instagram.txt")
-	add("twitter", "twitter.txt")
-	add("facebook", "facebook.txt")
-	add("pinterest", "pinterest.txt")
+	add("instagram.com", "instagram.txt")
+	add("twitter.com", "twitter.txt")
+	add("x.com", "twitter.txt")
+	add("facebook.com", "facebook.txt")
+	add("pinterest.com", "pinterest.txt")
 }
 
 func fileExists(p string) bool {

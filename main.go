@@ -25,7 +25,7 @@ const (
 
 var (
 	downloadsDir = "downloads"
-	sem          = make(chan struct{}, 3) // max 3 parallel downloads
+	sem          = make(chan struct{}, 2) // safer on Render
 )
 
 /* ================= MAIN ================= */
@@ -51,34 +51,38 @@ func main() {
 
 	log.Printf("Bot started: @%s", bot.Self.UserName)
 
-	// Health check (Render / Railway)
+	// 🔒 IMPORTANT: delete webhook to avoid conflict
+	_, _ = bot.Request(tgbotapi.DeleteWebhookConfig{})
+
+	// Health check (Render requirement)
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("OK"))
 		})
-		log.Fatal(http.ListenAndServe(":"+port, nil))
+		http.ListenAndServe(":"+port, nil)
 	}()
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
-	for update := range bot.GetUpdatesChan(u) {
+	updates := bot.GetUpdatesChan(u)
+
+	for update := range updates {
 		if update.Message != nil {
-			go handleMessage(bot, update.Message)
+			handleMessage(bot, update.Message)
 		}
 	}
 }
 
 /* ================= MESSAGE HANDLER ================= */
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	chatID := msg.Chat.ID
 	text := strings.TrimSpace(msg.Text)
+	chatID := msg.Chat.ID
 
 	if text == "/start" {
-		bot.Send(tgbotapi.NewMessage(
-			chatID,
-			"👋 Salom!\n\nInstagram, TikTok, X, Facebook yoki Pinterest link yuboring.\nENG YUQORI sifatda yuklab beraman 🚀",
+		bot.Send(tgbotapi.NewMessage(chatID,
+			"👋 Salom!\nInstagram, TikTok, X, Facebook yoki Pinterest link yuboring.",
 		))
 		return
 	}
@@ -88,148 +92,97 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		return
 	}
 
-	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
+	wait, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
 
-	go func() {
-		defer bot.Request(tgbotapi.DeleteMessageConfig{
-			ChatID:    chatID,
-			MessageID: waitMsg.MessageID,
-		})
+	for _, link := range links {
+		sem <- struct{}{}
+		files, mediaType := safeDownload(link)
+		<-sem
 
-		for _, link := range links {
-			sem <- struct{}{}
-			files, mediaType, err := download(link)
-			<-sem
+		if len(files) == 0 {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi:\n"+link))
+			continue
+		}
 
-			if err != nil || len(files) == 0 {
-				bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi:\n"+link))
-				continue
-			}
+		caption := "⬇️ @downloaderin123_bot"
 
-			caption := "⬇️ @downloaderin123_bot"
-
-			// Multiple files → album
-			if len(files) > 1 {
-				var media []interface{}
-				for i, f := range files {
-					if mediaType == "video" {
-						m := tgbotapi.NewInputMediaVideo(tgbotapi.FilePath(f))
-						m.SupportsStreaming = true
-						if i == 0 {
-							m.Caption = caption
-						}
-						media = append(media, m)
-					} else {
-						m := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(f))
-						if i == 0 {
-							m.Caption = caption
-						}
-						media = append(media, m)
-					}
-				}
-				album := tgbotapi.NewMediaGroup(chatID, media)
-				album.ReplyToMessageID = msg.MessageID
-				bot.Send(album)
-			} else {
-				// Single file
+		if len(files) > 1 {
+			var media []interface{}
+			for i, f := range files {
 				if mediaType == "video" {
-					v := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(files[0]))
-					v.Caption = caption
-					v.SupportsStreaming = true
-					v.ReplyToMessageID = msg.MessageID
-					bot.Send(v)
+					m := tgbotapi.NewInputMediaVideo(tgbotapi.FilePath(f))
+					m.SupportsStreaming = true
+					if i == 0 {
+						m.Caption = caption
+					}
+					media = append(media, m)
 				} else {
-					p := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(files[0]))
-					p.Caption = caption
-					p.ReplyToMessageID = msg.MessageID
-					bot.Send(p)
+					m := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(f))
+					if i == 0 {
+						m.Caption = caption
+					}
+					media = append(media, m)
 				}
 			}
-
-			// Cleanup
-			for _, f := range files {
-				_ = os.Remove(f)
+			bot.Send(tgbotapi.NewMediaGroup(chatID, media))
+		} else {
+			if mediaType == "video" {
+				v := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(files[0]))
+				v.SupportsStreaming = true
+				v.Caption = caption
+				bot.Send(v)
+			} else {
+				p := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(files[0]))
+				p.Caption = caption
+				bot.Send(p)
 			}
 		}
-	}()
-}
 
-/* ================= LINK PARSER ================= */
-func extractLinks(text string) []string {
-	re := regexp.MustCompile(`https?://\S+`)
-	raw := re.FindAllString(text, -1)
-
-	var links []string
-	for _, u := range raw {
-		if isSupported(u) {
-			links = append(links, u)
+		for _, f := range files {
+			_ = os.Remove(f)
 		}
 	}
-	return links
+
+	_ = bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    chatID,
+		MessageID: wait.MessageID,
+	})
 }
 
-func isSupported(u string) bool {
-	u = strings.ToLower(u)
-	return strings.Contains(u, "instagram") ||
-		strings.Contains(u, "tiktok") ||
-		strings.Contains(u, "twitter.com") ||
-		strings.Contains(u, "x.com") ||
-		strings.Contains(u, "facebook") ||
-		strings.Contains(u, "fb.watch") ||
-		strings.Contains(u, "pinterest") ||
-		strings.Contains(u, "pin.it")
-}
-
-/* ================= DOWNLOAD ================= */
-func download(link string) ([]string, string, error) {
+/* ================= DOWNLOAD SAFE ================= */
+func safeDownload(link string) ([]string, string) {
 	start := time.Now()
 
 	out := filepath.Join(
 		downloadsDir,
-		fmt.Sprintf("%d_%%(title).100s_%%(id)s", time.Now().UnixNano()),
+		fmt.Sprintf("%d_%%(id)s", time.Now().UnixNano()),
 	)
 
 	args := []string{
-		"--no-warnings",
-		"--yes-playlist",
-
-		// Force iPhone-safe codecs
-		"-f", "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/best",
-		"--recode-video", "mp4",
-
-		// iOS / Telegram compatibility
-		"--postprocessor-args",
-		"ffmpeg:-movflags +faststart -pix_fmt yuv420p -profile:v baseline -level 3.1",
-
-		// Prevent odd resolution (iOS bug)
-		"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-
+		"-f", "best[ext=mp4]/best",
+		"--merge-output-format", "mp4",
+		"--postprocessor-args", "ffmpeg:-movflags +faststart -pix_fmt yuv420p",
 		"-o", out + ".%(ext)s",
 		link,
 	}
 
-	applyCookies(&args, link)
-
-	if _, err := run(ytDlpPath, args...); err != nil {
-		log.Println("yt-dlp error:", err)
+	_, err := run(ytDlpPath, args...)
+	if err != nil {
+		log.Println("yt-dlp failed:", err)
 	}
 
 	files := recentFiles(start)
 	if len(files) > 0 {
-		return files, detectType(files), nil
+		return files, detectType(files)
 	}
 
-	// Fallback for image posts
+	// image fallback
 	_, _ = run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
-	if len(files) > 0 {
-		return files, "image", nil
-	}
-
-	return nil, "", fmt.Errorf("download failed")
+	return files, "image"
 }
 
-/* ================= EXEC ================= */
+/* ================= UTILS ================= */
 func run(cmd string, args ...string) (string, error) {
 	c := exec.Command(cmd, args...)
 	var buf bytes.Buffer
@@ -238,7 +191,24 @@ func run(cmd string, args ...string) (string, error) {
 	return buf.String(), c.Run()
 }
 
-/* ================= FILE UTILS ================= */
+func extractLinks(text string) []string {
+	re := regexp.MustCompile(`https?://\S+`)
+	all := re.FindAllString(text, -1)
+
+	var out []string
+	for _, u := range all {
+		if strings.Contains(u, "instagram") ||
+			strings.Contains(u, "tiktok") ||
+			strings.Contains(u, "facebook") ||
+			strings.Contains(u, "twitter") ||
+			strings.Contains(u, "x.com") ||
+			strings.Contains(u, "pinterest") {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
 func recentFiles(since time.Time) []string {
 	var files []string
 	filepath.Walk(downloadsDir, func(path string, info os.FileInfo, _ error) error {
@@ -253,29 +223,9 @@ func recentFiles(since time.Time) []string {
 
 func detectType(files []string) string {
 	for _, f := range files {
-		ext := strings.ToLower(filepath.Ext(f))
-		if ext == ".mp4" || ext == ".mov" || ext == ".mkv" {
+		if strings.HasSuffix(strings.ToLower(f), ".mp4") {
 			return "video"
 		}
 	}
 	return "image"
-}
-
-/* ================= COOKIES ================= */
-func applyCookies(args *[]string, link string) {
-	add := func(domain, file string) {
-		if strings.Contains(link, domain) && fileExists(file) {
-			*args = append([]string{"--cookies", file}, *args...)
-		}
-	}
-	add("instagram.com", "instagram.txt")
-	add("twitter.com", "twitter.txt")
-	add("x.com", "twitter.txt")
-	add("facebook.com", "facebook.txt")
-	add("pinterest.com", "pinterest.txt")
-}
-
-func fileExists(p string) bool {
-	i, err := os.Stat(p)
-	return err == nil && !i.IsDir()
 }

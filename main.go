@@ -69,9 +69,19 @@ func main() {
 
 	for update := range bot.GetUpdatesChan(u) {
 		if update.Message != nil {
-			go handleMessage(bot, update.Message)
+			// Only process messages containing supported links
+			if containsSupportedLink(update.Message.Text) {
+				go handleMessage(bot, update.Message)
+			}
 		}
 	}
+}
+
+/* ================= HELPER ================= */
+
+func containsSupportedLink(text string) bool {
+	links := extractLinks(text)
+	return len(links) > 0
 }
 
 /* ================= MESSAGE HANDLER ================= */
@@ -90,8 +100,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 
 	links := extractLinks(text)
 	if len(links) == 0 {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Link topilmadi"))
-		return
+		return // Do nothing if no supported links
 	}
 
 	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))

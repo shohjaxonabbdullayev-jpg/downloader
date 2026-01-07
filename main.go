@@ -55,7 +55,7 @@ func main() {
 
 	log.Printf("Bot started: @%s", bot.Self.UserName)
 
-	// Health check for Render / Railway
+	// Health check
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -159,40 +159,24 @@ func download(link string) ([]string, string, error) {
 	args := []string{
 		"--no-warnings",
 		"--yes-playlist",
-		"-f",
-		fmt.Sprintf(
-			"bv*[vcodec^=avc1][height<=%s]+ba[acodec^=mp4a]/b[ext=mp4]/b",
-			maxVideoHeight,
-		),
+		"-f", fmt.Sprintf("bv*[vcodec^=avc1][height<=%s]+ba[acodec^=mp4a]/b[ext=mp4]/b", maxVideoHeight),
 		"--merge-output-format", "mp4",
-		"--postprocessor-args",
-		"ffmpeg:-movflags +faststart -pix_fmt yuv420p",
+		"--postprocessor-args", "ffmpeg:-movflags +faststart -pix_fmt yuv420p",
 		"-o", out,
 		link,
 	}
 
-	// Apply cookies if exists
+	// Apply cookies: YouTube auto from browser, others from files
 	applyCookies(&args, link)
 
-	// Run yt-dlp
-	outStr, err := run(ytDlpPath, args...)
-	if err != nil {
-		log.Println("yt-dlp error:", err)
-		log.Println("yt-dlp output:", outStr)
-	}
-
+	_, _ = run(ytDlpPath, args...)
 	files := recentFiles(start)
 	if len(files) > 0 {
 		return files, detectType(files), nil
 	}
 
-	// Fallback to gallery-dl for images
-	outStr, err = run(galleryDlPath, "-d", downloadsDir, link)
-	if err != nil {
-		log.Println("gallery-dl error:", err)
-		log.Println("gallery-dl output:", outStr)
-	}
-
+	// Fallback: gallery-dl for images
+	_, _ = run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
 		return files, "image", nil
@@ -258,20 +242,21 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 
 func applyCookies(args *[]string, link string) {
 	add := func(domain, file string) {
-		if strings.Contains(link, domain) {
-			absPath := filepath.Join(downloadsDir, file)
-			if fileExists(absPath) {
-				*args = append([]string{"--cookies", absPath}, *args...)
-			} else {
-				log.Printf("Warning: Cookies file missing for %s: %s", domain, absPath)
-			}
+		if strings.Contains(link, domain) && fileExists(file) {
+			*args = append([]string{"--cookies", file}, *args...)
 		}
 	}
-	add("instagram", "instagram.txt")
-	add("twitter", "twitter.txt")
-	add("facebook", "facebook.txt")
-	add("pinterest", "pinterest.txt")
-	add("youtube", "youtube.txt") // YouTube cookies in Netscape format
+
+	switch {
+	case strings.Contains(link, "youtube.com") || strings.Contains(link, "youtu.be"):
+		// Automatically fetch cookies from browser (Chrome)
+		*args = append([]string{"--cookies-from-browser", "chrome"}, *args...)
+	default:
+		add("instagram", "instagram.txt")
+		add("twitter", "twitter.txt")
+		add("facebook", "facebook.txt")
+		add("pinterest", "pinterest.txt")
+	}
 }
 
 func fileExists(p string) bool {

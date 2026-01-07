@@ -83,18 +83,18 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(
 			chatID,
-			"👋 Salom!\n\nInstagram, TikTok, X, Facebook yoki Pinterest link yuboring.\nVideo va rasmlarni **eng mos va ochiladigan formatda** yuklab beraman 🚀",
+			"👋 Salom!\n\nInstagram, TikTok, YouTube, X, Facebook yoki Pinterest link yuboring.\nVideo va rasmlarni **eng mos va ochiladigan formatda** yuklab beraman 🚀",
 		))
 		return
 	}
 
 	links := extractLinks(text)
 	if len(links) == 0 {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Link topilmadi"))
 		return
 	}
 
 	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
-
 	defer bot.Request(tgbotapi.DeleteMessageConfig{
 		ChatID:    chatID,
 		MessageID: waitMsg.MessageID,
@@ -106,7 +106,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		<-sem
 
 		if err != nil || len(files) == 0 {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi"))
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Yuklab bo‘lmadi: %s", link)))
 			continue
 		}
 
@@ -141,7 +141,9 @@ func isSupported(u string) bool {
 		strings.Contains(u, "facebook") ||
 		strings.Contains(u, "fb.watch") ||
 		strings.Contains(u, "pinterest") ||
-		strings.Contains(u, "pin.it")
+		strings.Contains(u, "pin.it") ||
+		strings.Contains(u, "youtube.com") ||
+		strings.Contains(u, "youtu.be")
 }
 
 /* ================= DOWNLOAD ================= */
@@ -158,13 +160,12 @@ func download(link string) ([]string, string, error) {
 		"--no-warnings",
 		"--yes-playlist",
 
-		// 🔥 MAX COMPATIBILITY FORMAT
+		// Max compatibility video+audio
 		"-f",
 		fmt.Sprintf(
 			"bv*[vcodec^=avc1][height<=%s]+ba[acodec^=mp4a]/b[ext=mp4]/b",
 			maxVideoHeight,
 		),
-
 		"--merge-output-format", "mp4",
 
 		// iPhone / Telegram fix
@@ -177,14 +178,14 @@ func download(link string) ([]string, string, error) {
 
 	applyCookies(&args, link)
 
+	// Try yt-dlp first (videos/playlists)
 	_, _ = run(ytDlpPath, args...)
-
 	files := recentFiles(start)
 	if len(files) > 0 {
 		return files, detectType(files), nil
 	}
 
-	// Image fallback
+	// Fallback to gallery-dl (images)
 	_, _ = run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
@@ -259,6 +260,7 @@ func applyCookies(args *[]string, link string) {
 	add("twitter", "twitter.txt")
 	add("facebook", "facebook.txt")
 	add("pinterest", "pinterest.txt")
+	add("youtube", "youtube.txt") // <-- YouTube cookies
 }
 
 func fileExists(p string) bool {

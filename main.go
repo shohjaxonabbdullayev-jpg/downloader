@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -55,7 +56,7 @@ func main() {
 
 	log.Printf("Bot started: @%s", bot.Self.UserName)
 
-	// Health check
+	// Health check (Render / Railway)
 	go func() {
 		http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -69,19 +70,9 @@ func main() {
 
 	for update := range bot.GetUpdatesChan(u) {
 		if update.Message != nil {
-			// Only process messages containing supported links
-			if containsSupportedLink(update.Message.Text) {
-				go handleMessage(bot, update.Message)
-			}
+			go handleMessage(bot, update.Message)
 		}
 	}
-}
-
-/* ================= HELPER ================= */
-
-func containsSupportedLink(text string) bool {
-	links := extractLinks(text)
-	return len(links) > 0
 }
 
 /* ================= MESSAGE HANDLER ================= */
@@ -93,17 +84,18 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	if text == "/start" {
 		bot.Send(tgbotapi.NewMessage(
 			chatID,
-			"👋 Salom!\n\nInstagram, TikTok, YouTube, X, Facebook yoki Pinterest link yuboring.\nVideo va rasmlarni **eng mos va ochiladigan formatda** yuklab beraman 🚀",
+			"👋 Salom!\n\nInstagram, TikTok, X, Facebook yoki Pinterest link yuboring.\nVideo va rasmlarni **eng mos va ochiladigan formatda** yuklab beraman 🚀",
 		))
 		return
 	}
 
 	links := extractLinks(text)
 	if len(links) == 0 {
-		return // Do nothing if no supported links
+		return
 	}
 
 	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
+
 	defer bot.Request(tgbotapi.DeleteMessageConfig{
 		ChatID:    chatID,
 		MessageID: waitMsg.MessageID,
@@ -115,7 +107,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		<-sem
 
 		if err != nil || len(files) == 0 {
-			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Yuklab bo‘lmadi: %s", link)))
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi"))
 			continue
 		}
 
@@ -150,9 +142,7 @@ func isSupported(u string) bool {
 		strings.Contains(u, "facebook") ||
 		strings.Contains(u, "fb.watch") ||
 		strings.Contains(u, "pinterest") ||
-		strings.Contains(u, "pin.it") ||
-		strings.Contains(u, "youtube.com") ||
-		strings.Contains(u, "youtu.be")
+		strings.Contains(u, "pin.it")
 }
 
 /* ================= DOWNLOAD ================= */
@@ -168,23 +158,34 @@ func download(link string) ([]string, string, error) {
 	args := []string{
 		"--no-warnings",
 		"--yes-playlist",
-		"-f", fmt.Sprintf("bv*[vcodec^=avc1][height<=%s]+ba[acodec^=mp4a]/b[ext=mp4]/b", maxVideoHeight),
+
+		// 🔥 MAX COMPATIBILITY FORMAT
+		"-f",
+		fmt.Sprintf(
+			"bv*[vcodec^=avc1][height<=%s]+ba[acodec^=mp4a]/b[ext=mp4]/b",
+			maxVideoHeight,
+		),
+
 		"--merge-output-format", "mp4",
-		"--postprocessor-args", "ffmpeg:-movflags +faststart -pix_fmt yuv420p",
+
+		// iPhone / Telegram fix
+		"--postprocessor-args",
+		"ffmpeg:-movflags +faststart -pix_fmt yuv420p",
+
 		"-o", out,
 		link,
 	}
 
-	// Apply cookies: YouTube auto from browser, others from files
 	applyCookies(&args, link)
 
 	_, _ = run(ytDlpPath, args...)
+
 	files := recentFiles(start)
 	if len(files) > 0 {
 		return files, detectType(files), nil
 	}
 
-	// Fallback: gallery-dl for images
+	// Image fallback
 	_, _ = run(galleryDlPath, "-d", downloadsDir, link)
 	files = recentFiles(start)
 	if len(files) > 0 {
@@ -255,20 +256,14 @@ func applyCookies(args *[]string, link string) {
 			*args = append([]string{"--cookies", file}, *args...)
 		}
 	}
-
-	switch {
-	case strings.Contains(link, "youtube.com") || strings.Contains(link, "youtu.be"):
-		// Automatically fetch cookies from browser (Chrome)
-		*args = append([]string{"--cookies-from-browser", "chrome"}, *args...)
-	default:
-		add("instagram", "instagram.txt")
-		add("twitter", "twitter.txt")
-		add("facebook", "facebook.txt")
-		add("pinterest", "pinterest.txt")
-	}
+	add("instagram", "instagram.txt")
+	add("twitter", "twitter.txt")
+	add("facebook", "facebook.txt")
+	add("pinterest", "pinterest.txt")
 }
 
 func fileExists(p string) bool {
 	i, err := os.Stat(p)
 	return err == nil && !i.IsDir()
 }
+add youtube downloader, and give step by step guide for txt file

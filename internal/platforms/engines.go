@@ -224,7 +224,7 @@ func (e InstaloaderImagesEngine) Download(ctx context.Context, url string, jobDi
 		}
 	}
 	if len(resolved) == 0 {
-		return nil, fmt.Errorf("python not available; cannot use instaloader")
+		return nil, fmt.Errorf("%w: python not available; cannot use instaloader", ErrEngineUnavailable)
 	}
 
 	// Use Instaloader **Python library** (not CLI) and download images only.

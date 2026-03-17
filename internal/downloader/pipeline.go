@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -112,6 +113,11 @@ func (p *PipelineDownloader) DownloadWithInfo(ctx context.Context, url string, j
 			}
 			lastErr = err
 			p.logf("[download] engine=%s status=fail err=%v", engineName, err)
+
+			// If the engine can't run in this environment, don't waste retries/options.
+			if errors.Is(err, platforms.ErrEngineUnavailable) {
+				break
+			}
 		}
 	}
 

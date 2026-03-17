@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"log"
 	"net/http"
 	"os"
@@ -39,6 +40,10 @@ func main() {
 	if token == "" {
 		log.Fatal("BOT_TOKEN missing")
 	}
+
+	// Optional: provide cookies via env (recommended for deployment).
+	// This writes youtube.txt at startup if missing, without committing cookies to git.
+	ensureCookiesFileFromEnv("YOUTUBE_COOKIES_B64", "youtube.txt")
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -95,6 +100,26 @@ func main() {
 			go handleMessage(bot, dl, update.Message)
 		}
 	}
+}
+
+func ensureCookiesFileFromEnv(envVar string, targetPath string) {
+	if _, err := os.Stat(targetPath); err == nil {
+		return
+	}
+	b64 := strings.TrimSpace(os.Getenv(envVar))
+	if b64 == "" {
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		log.Printf("cookies env decode failed (%s): %v", envVar, err)
+		return
+	}
+	if err := os.WriteFile(targetPath, raw, 0600); err != nil {
+		log.Printf("cookies write failed (%s -> %s): %v", envVar, targetPath, err)
+		return
+	}
+	log.Printf("cookies file written: %s", targetPath)
 }
 
 /* ================= MESSAGE HANDLER ================= */

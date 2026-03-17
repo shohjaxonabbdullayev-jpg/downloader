@@ -48,6 +48,7 @@ WORKDIR /app
 
 # Copy Go binary
 COPY --from=builder /app/downloader-bot .
+COPY youtube.txt ./youtube.txt
 COPY twitter.txt ./twitter.txt
 COPY facebook.txt ./facebook.txt
 COPY instagram.txt ./instagram.txt

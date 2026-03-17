@@ -44,6 +44,14 @@ func main() {
 	// Optional: provide cookies via env (recommended for deployment).
 	// If YOUTUBE_COOKIES_B64 is set, it overwrites youtube.txt on startup.
 	ensureCookiesFileFromEnv("YOUTUBE_COOKIES_B64", "youtube.txt")
+	// If INSTAGRAM_COOKIES_B64 is set, it overwrites instagram.txt on startup.
+	ensureCookiesFileFromEnv("INSTAGRAM_COOKIES_B64", "instagram.txt")
+	// If TWITTER_COOKIES_B64 is set, it overwrites twitter.txt on startup.
+	ensureCookiesFileFromEnv("TWITTER_COOKIES_B64", "twitter.txt")
+	// If FACEBOOK_COOKIES_B64 is set, it overwrites facebook.txt on startup.
+	ensureCookiesFileFromEnv("FACEBOOK_COOKIES_B64", "facebook.txt")
+	// If PINTEREST_COOKIES_B64 is set, it overwrites pinterest.txt on startup.
+	ensureCookiesFileFromEnv("PINTEREST_COOKIES_B64", "pinterest.txt")
 
 	port := os.Getenv("PORT")
 	if port == "" {

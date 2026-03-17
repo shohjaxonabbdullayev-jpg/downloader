@@ -171,7 +171,15 @@ func (e GalleryDlEngine) Download(ctx context.Context, url string, jobDir string
 	if cmd == "" {
 		cmd = "gallery-dl"
 	}
-	res, err := execx.Run(ctx, cmd, "-d", jobDir, "--", url)
+	args := []string{"-d", jobDir}
+	// Use cookies when available (needed for Instagram login wall).
+	// gallery-dl supports -C/--cookies with Netscape cookies.txt format.
+	if opts.CookiesFile != "" {
+		args = append(args, "-C", opts.CookiesFile)
+	}
+	args = append(args, "--", url)
+
+	res, err := execx.Run(ctx, cmd, args...)
 	if err != nil {
 		out := strings.TrimSpace(res.Output)
 		if out != "" {
@@ -274,6 +282,13 @@ except Exception as e:
 		lastOut = strings.TrimSpace(res.Output)
 	}
 	if lastErr != nil {
+		// If the Python env exists but the module isn't installed, don't waste retries;
+		// mark this engine as unavailable so the pipeline can fall back immediately.
+		if strings.Contains(lastOut, "No module named 'instaloader'") ||
+			strings.Contains(lastOut, "No module named \"instaloader\"") ||
+			strings.Contains(lastOut, "IMPORT_ERROR:") && strings.Contains(lastOut, "ModuleNotFoundError") {
+			return nil, fmt.Errorf("%w: python module 'instaloader' is not installed (%s)", ErrEngineUnavailable, lastOut)
+		}
 		if lastOut != "" {
 			return nil, fmt.Errorf("%w: %s", lastErr, lastOut)
 		}

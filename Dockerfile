@@ -48,11 +48,11 @@ WORKDIR /app
 
 # Copy Go binary
 COPY --from=builder /app/downloader-bot .
-COPY youtube.txt ./youtube.txt
 COPY twitter.txt ./twitter.txt
 COPY facebook.txt ./facebook.txt
 COPY instagram.txt ./instagram.txt
 COPY pinterest.txt ./pinterest.txt
+RUN touch youtube.txt && chmod 600 youtube.txt
 RUN mkdir -p downloads
 
 # Environment variables

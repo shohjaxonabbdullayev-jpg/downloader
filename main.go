@@ -42,7 +42,7 @@ func main() {
 	}
 
 	// Optional: provide cookies via env (recommended for deployment).
-	// This writes youtube.txt at startup if missing, without committing cookies to git.
+	// If YOUTUBE_COOKIES_B64 is set, it overwrites youtube.txt on startup.
 	ensureCookiesFileFromEnv("YOUTUBE_COOKIES_B64", "youtube.txt")
 
 	port := os.Getenv("PORT")
@@ -103,9 +103,6 @@ func main() {
 }
 
 func ensureCookiesFileFromEnv(envVar string, targetPath string) {
-	if _, err := os.Stat(targetPath); err == nil {
-		return
-	}
 	b64 := strings.TrimSpace(os.Getenv(envVar))
 	if b64 == "" {
 		return

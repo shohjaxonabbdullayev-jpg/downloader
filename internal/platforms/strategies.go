@@ -79,6 +79,6 @@ func cookiesFileForPlatform(platform string) string {
 
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
-	return err == nil && !st.IsDir()
+	return err == nil && !st.IsDir() && st.Size() > 0
 }
 

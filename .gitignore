@@ -4,3 +4,6 @@
 downloads/
 *.exe
 *.exe~
+
+# Sensitive cookies (provide via env instead)
+youtube.txt

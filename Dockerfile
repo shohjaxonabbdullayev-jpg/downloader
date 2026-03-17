@@ -51,7 +51,6 @@ COPY --from=builder /app/downloader-bot .
 COPY twitter.txt ./twitter.txt
 COPY facebook.txt ./facebook.txt
 COPY instagram.txt ./instagram.txt
-COPY youtube.txt ./youtube.txt
 COPY pinterest.txt ./pinterest.txt
 RUN mkdir -p downloads
 

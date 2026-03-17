@@ -2,35 +2,33 @@
 package main
 
 import (
-	"bytes"
-	"fmt"
+	"context"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
+
+	"telegram_bot_downloader/internal/cache"
+	"telegram_bot_downloader/internal/downloader"
+	"telegram_bot_downloader/internal/platforms"
+	"telegram_bot_downloader/internal/urlx"
+	"telegram_bot_downloader/internal/worker"
 )
 
 /* ================= CONFIG ================= */
 
 const (
-	ytDlpPath      = "yt-dlp"
-	galleryDlPath  = "gallery-dl"
-	maxParallel    = 3
-	maxVideoHeight = "1080"
+	downloadsDir = "downloads"
 )
 
-var (
-	downloadsDir = "downloads"
-	sem          = make(chan struct{}, maxParallel)
-)
+// Tune based on your CPU + bandwidth. 8 is a good default on most servers.
+const maxConcurrentDownloads = 8
 
 /* ================= MAIN ================= */
 
@@ -47,12 +45,29 @@ func main() {
 		port = "8080"
 	}
 
-	_ = os.MkdirAll(downloadsDir, 0755)
+	dl := &downloader.PipelineDownloader{
+		Detector: downloader.YtDlpDetector{Cmd: "yt-dlp"},
+		Registry: platforms.DefaultRegistry(),
+		Cache:    cache.FileCache{Root: ""},
+		Semaphore: worker.NewSemaphore(maxConcurrentDownloads),
+		DownloadsRoot: downloadsDir,
+	}
+	dl.CacheRootDefault()
+	if err := dl.EnsureDirs(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Optional TTL cleanup for old job folders (best-effort).
+	_ = worker.StartTTLReaper(downloadsDir, "job_", 2*time.Hour, 30*time.Minute)
 
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		log.Fatal(err)
 	}
+	bot.Debug = false
+
+	// Ensure long-polling works even if a webhook was previously set.
+	_, _ = bot.Request(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: true})
 
 	log.Printf("Bot started: @%s", bot.Self.UserName)
 
@@ -62,7 +77,9 @@ func main() {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("OK"))
 		})
-		log.Fatal(http.ListenAndServe(":"+port, nil))
+		if err := http.ListenAndServe(":"+port, nil); err != nil {
+			log.Printf("health server stopped: %v", err)
+		}
 	}()
 
 	u := tgbotapi.NewUpdate(0)
@@ -70,22 +87,29 @@ func main() {
 
 	for update := range bot.GetUpdatesChan(u) {
 		if update.Message != nil {
-			go handleMessage(bot, update.Message)
+			log.Printf("[update] chat_id=%d from=%s text=%q", update.Message.Chat.ID, update.Message.From.UserName, update.Message.Text)
+		} else {
+			log.Printf("[update] non-message update received")
+		}
+		if update.Message != nil {
+			go handleMessage(bot, dl, update.Message)
 		}
 	}
 }
 
 /* ================= MESSAGE HANDLER ================= */
 
-func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	text := strings.TrimSpace(msg.Text)
 
 	if text == "/start" {
-		bot.Send(tgbotapi.NewMessage(
+		if _, err := bot.Send(tgbotapi.NewMessage(
 			chatID,
 			"👋 Salom!\n\nInstagram, TikTok, X, Facebook yoki Pinterest link yuboring.\nVideo va rasmlarni **eng mos va ochiladigan formatda** yuklab beraman 🚀",
-		))
+		)); err != nil {
+			log.Printf("[send] chat_id=%d err=%v", chatID, err)
+		}
 		return
 	}
 
@@ -94,7 +118,11 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 		return
 	}
 
-	waitMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
+	waitMsg, err := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
+	if err != nil {
+		log.Printf("[send] chat_id=%d err=%v", chatID, err)
+		return
+	}
 
 	defer bot.Request(tgbotapi.DeleteMessageConfig{
 		ChatID:    chatID,
@@ -102,20 +130,69 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	})
 
 	for _, link := range links {
-		sem <- struct{}{}
-		files, mediaType, err := download(link)
-		<-sem
-
-		if err != nil || len(files) == 0 {
+		jobID, jobDir, err := downloader.NewJobDir(downloadsDir)
+		if err != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi"))
 			continue
 		}
+		dl.Logger = func(format string, args ...any) {
+			log.Printf("["+jobID+"] "+format, args...)
+		}
 
-		for _, f := range files {
+		// Overall job timeout can be higher, but each yt-dlp execution has its own short timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+
+		// Skip expensive yt-dlp --dump-json unless truly needed.
+		// Use simple heuristics for platform/type so the strategy can choose engines quickly.
+		info := heuristicInfo(link)
+
+		start := time.Now()
+		res, err := dl.DownloadWithInfo(ctx, link, jobDir, info)
+		log.Printf("[%s] download_time=%s", jobID, time.Since(start).Truncate(10*time.Millisecond))
+		cancel()
+
+		if err != nil || res == nil || len(res.Files) == 0 {
+			msgText := "❌ Yuklab bo‘lmadi"
+			if err == downloader.ErrPrivate {
+				msgText = "🔒 Bu kontent private (login kerak bo‘lishi mumkin)."
+			} else if err == downloader.ErrNotFound {
+				msgText = "❌ Kontent topilmadi yoki o‘chirib yuborilgan."
+			}
+			bot.Send(tgbotapi.NewMessage(chatID, msgText))
+			_ = os.RemoveAll(jobDir)
+			continue
+		}
+
+		mediaType := detectType(res.Files)
+		for _, f := range res.Files {
 			sendMedia(bot, chatID, f, msg.MessageID, mediaType)
-			_ = os.Remove(f)
+			// Only delete temporary job files; cached files must remain.
+			if strings.HasPrefix(f, jobDir) {
+				_ = os.Remove(f)
+			}
+		}
+		_ = os.RemoveAll(jobDir)
+	}
+}
+
+func heuristicInfo(rawURL string) *downloader.MediaInfo {
+	u := strings.ToLower(rawURL)
+	plat := urlx.PlatformFromURL(u)
+	if plat == "youtube" {
+		// Force metadata detection for YouTube (size checks, restrictions).
+		return nil
+	}
+	typ := "unknown"
+	// Instagram has clear URL shapes.
+	if plat == "instagram" {
+		switch {
+		case strings.Contains(u, "/reel/") || strings.Contains(u, "/tv/"):
+			typ = "video"
+		case strings.Contains(u, "/p/"):
+			typ = "image"
 		}
 	}
+	return &downloader.MediaInfo{Platform: plat, Type: typ}
 }
 
 /* ================= LINK PARSER ================= */
@@ -136,6 +213,8 @@ func extractLinks(text string) []string {
 func isSupported(u string) bool {
 	u = strings.ToLower(u)
 	return strings.Contains(u, "instagram") ||
+		strings.Contains(u, "youtube.com") ||
+		strings.Contains(u, "youtu.be") ||
 		strings.Contains(u, "tiktok") ||
 		strings.Contains(u, "twitter.com") ||
 		strings.Contains(u, "x.com") ||
@@ -143,80 +222,6 @@ func isSupported(u string) bool {
 		strings.Contains(u, "fb.watch") ||
 		strings.Contains(u, "pinterest") ||
 		strings.Contains(u, "pin.it")
-}
-
-/* ================= DOWNLOAD ================= */
-
-func download(link string) ([]string, string, error) {
-	start := time.Now()
-
-	out := filepath.Join(
-		downloadsDir,
-		fmt.Sprintf("%d_%%(title).80s_%%(id)s.%%(ext)s", time.Now().Unix()),
-	)
-
-	args := []string{
-		"--no-warnings",
-		"--yes-playlist",
-
-		// 🔥 MAX COMPATIBILITY FORMAT
-		"-f",
-		fmt.Sprintf(
-			"bv*[vcodec^=avc1][height<=%s]+ba[acodec^=mp4a]/b[ext=mp4]/b",
-			maxVideoHeight,
-		),
-
-		"--merge-output-format", "mp4",
-
-		// iPhone / Telegram fix
-		"--postprocessor-args",
-		"ffmpeg:-movflags +faststart -pix_fmt yuv420p",
-
-		"-o", out,
-		link,
-	}
-
-	applyCookies(&args, link)
-
-	_, _ = run(ytDlpPath, args...)
-
-	files := recentFiles(start)
-	if len(files) > 0 {
-		return files, detectType(files), nil
-	}
-
-	// Image fallback
-	_, _ = run(galleryDlPath, "-d", downloadsDir, link)
-	files = recentFiles(start)
-	if len(files) > 0 {
-		return files, "image", nil
-	}
-
-	return nil, "", fmt.Errorf("download failed")
-}
-
-/* ================= EXEC ================= */
-
-func run(cmd string, args ...string) (string, error) {
-	c := exec.Command(cmd, args...)
-	var buf bytes.Buffer
-	c.Stdout = &buf
-	c.Stderr = &buf
-	return buf.String(), c.Run()
-}
-
-/* ================= FILE UTILS ================= */
-
-func recentFiles(since time.Time) []string {
-	var files []string
-	_ = filepath.Walk(downloadsDir, func(path string, info os.FileInfo, _ error) error {
-		if info != nil && !info.IsDir() && info.ModTime().After(since) {
-			files = append(files, path)
-		}
-		return nil
-	})
-	sort.Strings(files)
-	return files
 }
 
 func detectType(files []string) string {
@@ -247,23 +252,3 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int, med
 		bot.Send(p)
 	}
 }
-
-/* ================= COOKIES ================= */
-
-func applyCookies(args *[]string, link string) {
-	add := func(domain, file string) {
-		if strings.Contains(link, domain) && fileExists(file) {
-			*args = append([]string{"--cookies", file}, *args...)
-		}
-	}
-	add("instagram", "instagram.txt")
-	add("twitter", "twitter.txt")
-	add("facebook", "facebook.txt")
-	add("pinterest", "pinterest.txt")
-}
-
-func fileExists(p string) bool {
-	i, err := os.Stat(p)
-	return err == nil && !i.IsDir()
-}
-

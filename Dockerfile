@@ -38,9 +38,10 @@ RUN apt-get update && \
 
 # ✅ Install Python packages yt-dlp and gallery-dl in isolated venv
 RUN python3 -m venv /opt/yt && \
-    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl && \
+    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl instaloader && \
     ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
-    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl
+    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl && \
+    ln -s /opt/yt/bin/instaloader /usr/local/bin/instaloader
 
 # Create app directory
 WORKDIR /app

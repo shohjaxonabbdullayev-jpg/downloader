@@ -1,1 +1,6 @@
 .env*
+
+# Runtime artifacts
+downloads/
+*.exe
+*.exe~

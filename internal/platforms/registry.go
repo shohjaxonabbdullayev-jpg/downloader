@@ -21,7 +21,7 @@ func DefaultRegistry() Registry {
 	yt := YtDlpEngine{
 		CompatMP4Fallback: true,
 		MaxHeight:         "2160",
-		ConcurrentFragments: 5,
+		ConcurrentFragments: 8,
 		HTTPChunkSize:       "10M",
 		Retries:             3,
 		FragmentRetries:     3,

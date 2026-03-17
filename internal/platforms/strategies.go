@@ -33,7 +33,7 @@ func (s instagramStrategy) EnginesFor(info *model.MediaInfo) []Engine {
 		return []Engine{s.yt, s.gd}
 	}
 	// Otherwise, try instaloader images first.
-	return []Engine{s.insta, s.yt, s.gd}
+	return []Engine{s.insta, s.gd, s.yt}
 }
 
 func (s instagramStrategy) OptionsMatrix(url string) []Options {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -204,8 +205,26 @@ func (e InstaloaderImagesEngine) Download(ctx context.Context, url string, jobDi
 	if py != "" {
 		candidates = append(candidates, py)
 	} else {
-		// "py" is the Windows Python launcher.
-		candidates = append(candidates, "python3", "python", "py")
+		// Prefer common Linux/Docker python locations first, then names.
+		candidates = append(candidates,
+			"/usr/bin/python3",
+			"/usr/local/bin/python3",
+			"python3",
+			"python",
+			// "py" is the Windows Python launcher.
+			"py",
+		)
+	}
+
+	// Filter to only candidates that exist on this host.
+	var resolved []string
+	for _, c := range candidates {
+		if p, err := exec.LookPath(c); err == nil && p != "" {
+			resolved = append(resolved, c)
+		}
+	}
+	if len(resolved) == 0 {
+		return nil, fmt.Errorf("python not available; cannot use instaloader")
 	}
 
 	// Use Instaloader **Python library** (not CLI) and download images only.
@@ -245,7 +264,7 @@ except Exception as e:
 
 	var lastErr error
 	var lastOut string
-	for _, candidate := range candidates {
+	for _, candidate := range resolved {
 		res, err := execx.Run(ctx, candidate, "-c", code, shortcode, jobDir)
 		if err == nil {
 			lastErr = nil

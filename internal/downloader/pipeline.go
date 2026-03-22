@@ -15,6 +15,16 @@ import (
 	"telegram_bot_downloader/internal/worker"
 )
 
+type jobLogCtxKey struct{}
+
+// ContextWithJobLogger attaches a per-request logger (avoids races when many chats download at once).
+func ContextWithJobLogger(ctx context.Context, logf func(format string, args ...any)) context.Context {
+	if logf == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, jobLogCtxKey{}, logf)
+}
+
 type PipelineDownloader struct {
 	Detector   YtDlpDetector
 	Registry   platforms.Registry
@@ -32,6 +42,16 @@ func (p *PipelineDownloader) logf(format string, args ...any) {
 		return
 	}
 	log.Printf(format, args...)
+}
+
+func (p *PipelineDownloader) logfCtx(ctx context.Context, format string, args ...any) {
+	if v := ctx.Value(jobLogCtxKey{}); v != nil {
+		if fn, ok := v.(func(format string, args ...any)); ok && fn != nil {
+			fn(format, args...)
+			return
+		}
+	}
+	p.logf(format, args...)
 }
 
 func (p *PipelineDownloader) Detect(ctx context.Context, url string) (*MediaInfo, error) {
@@ -63,7 +83,7 @@ func (p *PipelineDownloader) DownloadWithInfo(ctx context.Context, url string, j
 	if info == nil {
 		detected, derr := p.Detector.Detect(ctx, u)
 		if derr != nil {
-			p.logf("[detect] url=%s err=%v", u, derr)
+			p.logfCtx(ctx, "[detect] url=%s err=%v", u, derr)
 		}
 		info = detected
 	}
@@ -72,9 +92,9 @@ func (p *PipelineDownloader) DownloadWithInfo(ctx context.Context, url string, j
 	engines := strat.EnginesFor(info)
 	optsMatrix := strat.OptionsMatrix(u)
 	if info != nil {
-		p.logf("[job] platform=%s type=%s", info.Platform, info.Type)
+		p.logfCtx(ctx, "[job] platform=%s type=%s", info.Platform, info.Type)
 	} else {
-		p.logf("[job] platform=%s type=%s", PlatformFromURL(u), "unknown")
+		p.logfCtx(ctx, "[job] platform=%s type=%s", PlatformFromURL(u), "unknown")
 	}
 
 	var lastErr error
@@ -83,7 +103,7 @@ func (p *PipelineDownloader) DownloadWithInfo(ctx context.Context, url string, j
 			engineName := engine.Name()
 			attemptLabel := idx + 1
 
-			p.logf("[download] engine=%s retry=%d url=%s", engineName, attemptLabel, u)
+			p.logfCtx(ctx, "[download] engine=%s retry=%d url=%s", engineName, attemptLabel, u)
 
 			res, err := engine.Download(ctx, u, jobDir, opts)
 			if err == nil && res != nil && len(res.Files) > 0 {
@@ -91,13 +111,13 @@ func (p *PipelineDownloader) DownloadWithInfo(ctx context.Context, url string, j
 				if p.Cache.Root != "" {
 					if cachedFiles, cerr := p.Cache.Save(cacheKey, res.Files); cerr != nil {
 						// Cache failures should not fail the download itself.
-						p.logf("[cache] save_failed key=%s err=%v", cacheKey, cerr)
+						p.logfCtx(ctx, "[cache] save_failed key=%s err=%v", cacheKey, cerr)
 					} else if len(cachedFiles) > 0 {
-						p.logf("[download] engine=%s status=success cache=hit", engineName)
+						p.logfCtx(ctx, "[download] engine=%s status=success cache=hit", engineName)
 					}
 				}
 
-				p.logf("[download] engine=%s status=success", engineName)
+				p.logfCtx(ctx, "[download] engine=%s status=success", engineName)
 				// Prefer cached files if present; otherwise return job dir output.
 				if p.Cache.Root != "" {
 					if files, ok := p.Cache.Has(cacheKey); ok {
@@ -112,7 +132,7 @@ func (p *PipelineDownloader) DownloadWithInfo(ctx context.Context, url string, j
 				err = fmt.Errorf("%s produced empty result", engineName)
 			}
 			lastErr = err
-			p.logf("[download] engine=%s status=fail err=%v", engineName, err)
+			p.logfCtx(ctx, "[download] engine=%s status=fail err=%v", engineName, err)
 
 			// If the engine can't run in this environment, don't waste retries/options.
 			if errors.Is(err, platforms.ErrEngineUnavailable) {

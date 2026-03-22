@@ -59,12 +59,11 @@ func (e YouTubeEngine) Download(ctx context.Context, url string, jobDir string, 
 
 type youtubeStrategy struct {
 	yt Engine
-	gd Engine
 }
 
 func (s youtubeStrategy) EnginesFor(_ *model.MediaInfo) []Engine {
-	// YouTube should almost always succeed with yt-dlp; gallery-dl is a last resort.
-	return []Engine{s.yt, s.gd}
+	// YouTube / Shorts: yt-dlp only.
+	return []Engine{s.yt}
 }
 
 func (s youtubeStrategy) OptionsMatrix(url string) []Options {

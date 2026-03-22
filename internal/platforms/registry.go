@@ -22,23 +22,23 @@ func DefaultRegistry() Registry {
 		CompatMP4Fallback:   true,
 		MaxHeight:           "2160",
 		ConcurrentFragments: 16,
-		HTTPChunkSize:       "16M",
+		// YouTube throttles http chunk sizes >10M (yt-dlp FAQ).
+		HTTPChunkSize: "10M",
 		Retries:             2,
 		FragmentRetries:     2,
 	}
-	gd := GalleryDlEngine{}
 	ig := InstaloaderImagesEngine{}
 
 	ytyt := YouTubeEngine{Base: yt, MaxTelegramBytes: 50 * 1024 * 1024}
 
 	return Registry{
-		Instagram: instagramStrategy{insta: ig, yt: yt, gd: gd},
-		YouTube:   youtubeStrategy{yt: ytyt, gd: gd},
-		TikTok:    simpleFallbackStrategy{primary: yt, fallback: gd},
-		Twitter:   simpleFallbackStrategy{primary: yt, fallback: gd},
-		Facebook:  simpleFallbackStrategy{primary: yt, fallback: gd},
-		Pinterest: simpleFallbackStrategy{primary: yt, fallback: gd},
-		Default:   simpleFallbackStrategy{primary: yt, fallback: gd},
+		Instagram: instagramStrategy{insta: ig, yt: yt},
+		YouTube:   youtubeStrategy{yt: ytyt},
+		TikTok:    ytOnlyStrategy{yt: yt},
+		Twitter:   ytOnlyStrategy{yt: yt},
+		Facebook:  ytOnlyStrategy{yt: yt},
+		Pinterest: ytOnlyStrategy{yt: yt},
+		Default:   ytOnlyStrategy{yt: yt},
 	}
 }
 

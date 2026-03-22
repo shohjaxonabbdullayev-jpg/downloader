@@ -34,16 +34,15 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 		cmd = "yt-dlp"
 	}
 
-	timeout := e.Timeout
-	if timeout <= 0 {
-		timeout = 60 * time.Second
+	if e.Timeout > 0 {
+		var c2 context.CancelFunc
+		ctx, c2 = context.WithTimeout(ctx, e.Timeout)
+		defer c2()
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
 	out := filepath.Join(jobDir, "%(title).80s_%(id)s.%(ext)s")
 	args := []string{
-		"--quiet",
+		// No --quiet: keep stderr in logs when a run fails (Render/Docker).
 		"--no-warnings",
 		"--yes-playlist",
 		"--no-part",
@@ -168,41 +167,6 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	return nil, fmt.Errorf("yt-dlp produced no files")
 }
 
-type GalleryDlEngine struct {
-	Cmd string
-}
-
-func (e GalleryDlEngine) Name() string { return "gallery-dl" }
-
-func (e GalleryDlEngine) Download(ctx context.Context, url string, jobDir string, opts Options) (*model.DownloadResult, error) {
-	cmd := e.Cmd
-	if cmd == "" {
-		cmd = "gallery-dl"
-	}
-	args := []string{"-d", jobDir}
-	ck := strings.TrimSpace(opts.CookiesFile)
-	if ck != "" {
-		if st, err := os.Stat(ck); err == nil && !st.IsDir() && st.Size() > 0 {
-			args = append(args, "-C", ck)
-		}
-	}
-	args = append(args, "--", url)
-
-	res, err := execx.Run(ctx, cmd, args...)
-	if err != nil {
-		out := strings.TrimSpace(res.Output)
-		if out != "" {
-			return nil, fmt.Errorf("%w: %s", err, out)
-		}
-		return nil, err
-	}
-	files := allFiles(jobDir)
-	if len(files) == 0 {
-		return nil, fmt.Errorf("gallery-dl produced no files")
-	}
-	return &model.DownloadResult{Files: files, Size: totalSize(files)}, nil
-}
-
 type InstaloaderImagesEngine struct {
 	// Python is the python executable to use (e.g. "python3" or "python").
 	// If empty, the engine will try "python3" and then "python".
@@ -222,8 +186,10 @@ func (e InstaloaderImagesEngine) Download(ctx context.Context, url string, jobDi
 	if py != "" {
 		candidates = append(candidates, py)
 	} else {
-		// Prefer common Linux/Docker python locations first, then names.
+		// Dockerfile venv (Render/Railway Docker deploys): instaloader lives here.
 		candidates = append(candidates,
+			"/opt/yt/bin/python3",
+			"/opt/yt/bin/python",
 			"/usr/bin/python3",
 			"/usr/local/bin/python3",
 			"python3",
@@ -333,6 +299,19 @@ func filterImages(files []string) []string {
 	return out
 }
 
+func filePathWithinDir(file, dir string) bool {
+	cf, err1 := filepath.Abs(filepath.Clean(file))
+	cd, err2 := filepath.Abs(filepath.Clean(dir))
+	if err1 != nil || err2 != nil {
+		return strings.HasPrefix(strings.ToLower(file), strings.ToLower(dir))
+	}
+	rel, err := filepath.Rel(cd, cf)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func runYtDlpAndCollectFiles(ctx context.Context, cmd string, args []string, jobDir string) ([]string, error) {
 	res, err := execx.Run(ctx, cmd, args...)
 	if err != nil {
@@ -349,8 +328,7 @@ func runYtDlpAndCollectFiles(ctx context.Context, cmd string, args []string, job
 		if p == "" {
 			continue
 		}
-		// Only accept files that exist and are within jobDir (defense-in-depth).
-		if !strings.HasPrefix(strings.ToLower(p), strings.ToLower(jobDir)) {
+		if !filePathWithinDir(p, jobDir) {
 			continue
 		}
 		if st, statErr := os.Stat(p); statErr == nil && !st.IsDir() {

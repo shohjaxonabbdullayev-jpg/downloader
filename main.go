@@ -162,12 +162,11 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi"))
 			continue
 		}
-		dl.Logger = func(format string, args ...any) {
-			log.Printf("["+jobID+"] "+format, args...)
-		}
-
-		// Overall job timeout can be higher, but each yt-dlp execution has its own short timeout.
+		// Overall job timeout; yt-dlp no longer uses a separate 60s cap (was killing long YouTube downloads).
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx = downloader.ContextWithJobLogger(ctx, func(format string, args ...any) {
+			log.Printf("["+jobID+"] "+format, args...)
+		})
 
 		// Skip expensive yt-dlp --dump-json unless truly needed.
 		// Use simple heuristics for platform/type so the strategy can choose engines quickly.
@@ -179,11 +178,18 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 		cancel()
 
 		if err != nil || res == nil || len(res.Files) == 0 {
+			if err != nil {
+				log.Printf("[%s] download_failed url=%q err=%v", jobID, link, err)
+			} else {
+				log.Printf("[%s] download_failed url=%q (empty result)", jobID, link)
+			}
 			msgText := "❌ Yuklab bo‘lmadi"
 			if err == downloader.ErrPrivate {
 				msgText = "🔒 Bu kontent private (login kerak bo‘lishi mumkin)."
 			} else if err == downloader.ErrNotFound {
 				msgText = "❌ Kontent topilmadi yoki o‘chirib yuborilgan."
+			} else if err != nil && strings.Contains(strings.ToLower(err.Error()), "sign in to confirm you're not a bot") {
+				msgText = "🤖 YouTube bot tekshiruvi: server `YOUTUBE_COOKIES_B64` (yoki `youtube.txt`) orqali cookie qo‘shing — https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"
 			}
 			bot.Send(tgbotapi.NewMessage(chatID, msgText))
 			_ = os.RemoveAll(jobDir)

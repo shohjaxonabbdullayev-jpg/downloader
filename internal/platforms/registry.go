@@ -28,13 +28,14 @@ func DefaultRegistry() Registry {
 		FragmentRetries:     2,
 	}
 	ig := InstaloaderImagesEngine{}
+	gd := GalleryDlEngine{}
 
 	return Registry{
 		Instagram: instagramStrategy{insta: ig, yt: yt},
 		YouTube:   noEngineStrategy{},
 		TikTok:    ytOnlyStrategy{yt: yt},
 		Twitter:   ytOnlyStrategy{yt: yt},
-		Facebook:  ytOnlyStrategy{yt: yt},
+		Facebook:  facebookStrategy{yt: yt, gd: gd},
 		Pinterest: ytOnlyStrategy{yt: yt},
 		Default:   ytOnlyStrategy{yt: yt},
 	}

@@ -99,12 +99,22 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 		maxH = "1080"
 	}
 
+	ul := strings.ToLower(url)
+	isFB := strings.Contains(ul, "facebook.com") || strings.Contains(ul, "fb.watch")
+
 	// Speed-first: prefer already merged MP4 to avoid ffmpeg merge (fastest).
 	fastArgs := append([]string{}, args...)
 	fastFormat := "best[ext=mp4]/best"
+	if isFB {
+		// Facebook playlists / reels: not every entry is mp4; avoid missing carousel videos.
+		fastFormat = "bestvideo+bestaudio/bestvideo/best[ext=mp4]/best[ext=webm]/best"
+	}
 	if opts.MaxFilesize != "" {
 		// Best effort to stay under Telegram bot limit (approx).
 		fastFormat = fmt.Sprintf("best[ext=mp4][filesize<%s]/best[filesize<%s]/best", opts.MaxFilesize, opts.MaxFilesize)
+		if isFB {
+			fastFormat = fmt.Sprintf("bestvideo+bestaudio/bestvideo/best[ext=mp4][filesize<%s]/best[ext=webm][filesize<%s]/best[filesize<%s]/best", opts.MaxFilesize, opts.MaxFilesize, opts.MaxFilesize)
+		}
 	}
 	fastArgs = append(fastArgs,
 		"-f", fastFormat,
@@ -121,8 +131,14 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	// Quality fallback: best MP4 video + best M4A audio (may require merge).
 	qualityArgs := append([]string{}, args...)
 	qualityFormat := fmt.Sprintf("bestvideo[ext=mp4][height<=%s]+bestaudio[ext=m4a]/best[ext=mp4]/best", maxH)
+	if isFB {
+		qualityFormat = fmt.Sprintf("bestvideo[ext=mp4][height<=%s]+bestaudio[ext=m4a]/bestvideo[height<=%s]+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best[ext=webm]/best", maxH, maxH)
+	}
 	if opts.MaxFilesize != "" {
 		qualityFormat = fmt.Sprintf("bestvideo[ext=mp4][height<=%s][filesize<%s]+bestaudio[ext=m4a][filesize<%s]/best[ext=mp4][filesize<%s]/best[filesize<%s]/best", maxH, opts.MaxFilesize, opts.MaxFilesize, opts.MaxFilesize, opts.MaxFilesize)
+		if isFB {
+			qualityFormat = fmt.Sprintf("bestvideo[ext=mp4][height<=%s][filesize<%s]+bestaudio[ext=m4a][filesize<%s]/bestvideo[height<=%s]+bestaudio/best[ext=mp4][filesize<%s]/best[ext=webm][filesize<%s]/best", maxH, opts.MaxFilesize, opts.MaxFilesize, maxH, opts.MaxFilesize, opts.MaxFilesize)
+		}
 	}
 	qualityArgs = append(qualityArgs,
 		"-f", qualityFormat,
@@ -165,6 +181,42 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 		return nil, err
 	}
 	return nil, fmt.Errorf("yt-dlp produced no files")
+}
+
+// GalleryDlEngine is used for Facebook multi-image carousels; yt-dlp’s Facebook extractor only handles Video nodes, not photos.
+type GalleryDlEngine struct {
+	Cmd string
+}
+
+func (e GalleryDlEngine) Name() string { return "gallery-dl" }
+
+func (e GalleryDlEngine) Download(ctx context.Context, url string, jobDir string, opts Options) (*model.DownloadResult, error) {
+	cmd := e.Cmd
+	if cmd == "" {
+		cmd = "gallery-dl"
+	}
+	args := []string{"-d", jobDir}
+	ck := strings.TrimSpace(opts.CookiesFile)
+	if ck != "" {
+		if st, err := os.Stat(ck); err == nil && !st.IsDir() && st.Size() > 0 {
+			args = append(args, "-C", ck)
+		}
+	}
+	args = append(args, "--", url)
+
+	res, err := execx.Run(ctx, cmd, args...)
+	if err != nil {
+		out := strings.TrimSpace(res.Output)
+		if out != "" {
+			return nil, fmt.Errorf("%w: %s", err, out)
+		}
+		return nil, err
+	}
+	files := allFiles(jobDir)
+	if len(files) == 0 {
+		return nil, fmt.Errorf("gallery-dl produced no files")
+	}
+	return &model.DownloadResult{Files: files, Size: totalSize(files)}, nil
 }
 
 type InstaloaderImagesEngine struct {

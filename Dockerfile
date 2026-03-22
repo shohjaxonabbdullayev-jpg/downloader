@@ -36,10 +36,11 @@ RUN apt-get update && \
         git && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Install yt-dlp + instaloader in isolated venv
+# ✅ Install yt-dlp, gallery-dl (Facebook carousels), instaloader in isolated venv
 RUN python3 -m venv /opt/yt && \
-    /opt/yt/bin/pip install --no-cache-dir yt-dlp instaloader && \
+    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl instaloader && \
     ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
+    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl && \
     ln -s /opt/yt/bin/instaloader /usr/local/bin/instaloader
 
 # Create app directory

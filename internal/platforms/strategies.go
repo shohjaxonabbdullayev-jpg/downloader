@@ -42,6 +42,24 @@ func (s instagramStrategy) OptionsMatrix(url string) []Options {
 	return defaultRetryOptions(url)
 }
 
+type facebookStrategy struct {
+	yt Engine
+	gd Engine
+}
+
+// Photo / multi-image carousels: gallery-dl first (yt-dlp skips non-Video attachments).
+// Obvious video URLs: yt-dlp first.
+func (s facebookStrategy) EnginesFor(info *model.MediaInfo) []Engine {
+	if info != nil && strings.EqualFold(info.Type, "video") {
+		return []Engine{s.yt, s.gd}
+	}
+	return []Engine{s.gd, s.yt}
+}
+
+func (s facebookStrategy) OptionsMatrix(url string) []Options {
+	return defaultRetryOptions(url)
+}
+
 func defaultRetryOptions(url string) []Options {
 	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 	opts := []Options{

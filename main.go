@@ -218,6 +218,19 @@ func heuristicInfo(rawURL string) *downloader.MediaInfo {
 			typ = "image"
 		}
 	}
+	if plat == "facebook" {
+		// Video-style URLs: yt-dlp first. Posts / albums / carousels: gallery-dl first (photos).
+		videoish := strings.Contains(u, "fb.watch") ||
+			strings.Contains(u, "/reel") ||
+			strings.Contains(u, "/videos/") ||
+			strings.Contains(u, "video.php") ||
+			(strings.Contains(u, "facebook.com/watch") && strings.Contains(u, "v="))
+		if videoish {
+			typ = "video"
+		} else {
+			typ = "carousel"
+		}
+	}
 	return &downloader.MediaInfo{Platform: plat, Type: typ}
 }
 

@@ -67,24 +67,24 @@ func (s youtubeStrategy) EnginesFor(_ *model.MediaInfo) []Engine {
 }
 
 func (s youtubeStrategy) OptionsMatrix(url string) []Options {
-	// Anonymous attempts first (--no-cookies); optional youtube.txt retries last.
-	// Try Telegram-sized formats first to avoid downloading huge files then failing the size check.
+	// When youtube.txt exists, try cookie auth first (fixes datacenter “sign in” fast); else incognito-only.
 	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-	opts := []Options{
+	anon := []Options{
 		{MaxFilesize: "50M"},
 		{UserAgent: ua, MaxFilesize: "50M"},
 		{},
 		{UserAgent: ua},
 	}
 	if ck := CookiesPathForURL(url); ck != "" {
-		opts = append(opts,
-			Options{CookiesFile: ck, MaxFilesize: "50M"},
-			Options{CookiesFile: ck, UserAgent: ua, MaxFilesize: "50M"},
-			Options{CookiesFile: ck},
-			Options{CookiesFile: ck, UserAgent: ua},
-		)
+		withCK := []Options{
+			{CookiesFile: ck, MaxFilesize: "50M"},
+			{CookiesFile: ck, UserAgent: ua, MaxFilesize: "50M"},
+			{CookiesFile: ck},
+			{CookiesFile: ck, UserAgent: ua},
+		}
+		return append(withCK, anon...)
 	}
-	return opts
+	return anon
 }
 
 func isYouTube(url string) bool {

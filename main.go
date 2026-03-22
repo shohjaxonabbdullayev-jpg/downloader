@@ -188,8 +188,12 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 				msgText = "🔒 Bu kontent private (login kerak bo‘lishi mumkin)."
 			} else if err == downloader.ErrNotFound {
 				msgText = "❌ Kontent topilmadi yoki o‘chirib yuborilgan."
-			} else if err != nil && strings.Contains(strings.ToLower(err.Error()), "sign in to confirm you're not a bot") {
-				msgText = "🤖 YouTube bot tekshiruvi: server `YOUTUBE_COOKIES_B64` (yoki `youtube.txt`) orqali cookie qo‘shing — https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"
+			} else if err != nil && youtubeBotOrSigninError(err.Error()) {
+				msgText = "🤖 YouTube: server IP uchun cookie kerak.\n\n" +
+					"Render: `YOUTUBE_COOKIES_B64` (Netscape `youtube.txt` faylini base64).\n\n" +
+					"Qo‘llanmalar:\n" +
+					"• Cookie format va `--cookies`: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp\n" +
+					"• YouTube uchun barqaror eksport (incognito + robots.txt): https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies"
 			}
 			bot.Send(tgbotapi.NewMessage(chatID, msgText))
 			_ = os.RemoveAll(jobDir)
@@ -240,6 +244,14 @@ func extractLinks(text string) []string {
 		}
 	}
 	return links
+}
+
+func youtubeBotOrSigninError(errMsg string) bool {
+	m := strings.ToLower(errMsg)
+	if strings.Contains(m, "sign in to confirm") {
+		return true
+	}
+	return strings.Contains(m, "not a bot") && strings.Contains(m, "cookies")
 }
 
 func isSupported(u string) bool {

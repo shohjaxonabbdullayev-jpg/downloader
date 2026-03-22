@@ -22,18 +22,16 @@ func DefaultRegistry() Registry {
 		CompatMP4Fallback:   true,
 		MaxHeight:           "2160",
 		ConcurrentFragments: 16,
-		// YouTube throttles http chunk sizes >10M (yt-dlp FAQ).
+		// yt-dlp: YouTube and others throttle http chunk sizes >10M (FAQ).
 		HTTPChunkSize: "10M",
 		Retries:             2,
 		FragmentRetries:     2,
 	}
 	ig := InstaloaderImagesEngine{}
 
-	ytyt := YouTubeEngine{Base: yt, MaxTelegramBytes: 50 * 1024 * 1024}
-
 	return Registry{
 		Instagram: instagramStrategy{insta: ig, yt: yt},
-		YouTube:   youtubeStrategy{yt: ytyt},
+		YouTube:   noEngineStrategy{},
 		TikTok:    ytOnlyStrategy{yt: yt},
 		Twitter:   ytOnlyStrategy{yt: yt},
 		Facebook:  ytOnlyStrategy{yt: yt},
@@ -43,6 +41,11 @@ func DefaultRegistry() Registry {
 }
 
 func (r Registry) StrategyFor(info *model.MediaInfo, url string) Strategy {
+	ul := strings.ToLower(url)
+	if strings.Contains(ul, "youtube.com") || strings.Contains(ul, "youtu.be") {
+		return r.YouTube
+	}
+
 	plat := ""
 	if info != nil && info.Platform != "" {
 		plat = info.Platform

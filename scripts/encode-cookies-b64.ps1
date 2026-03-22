@@ -1,14 +1,13 @@
-# Encode a Netscape cookie file for Render env vars (after you export youtube.txt etc. yourself).
+# Encode a Netscape cookie file for Render env vars (export the .txt yourself with a browser extension).
 # Usage (from repo root):
 #   .\scripts\encode-cookies-b64.ps1
-#   .\scripts\encode-cookies-b64.ps1 -Platform instagram
+#   .\scripts\encode-cookies-b64.ps1 -Platform twitter
 param(
-    [ValidateSet('youtube', 'instagram', 'twitter', 'facebook', 'pinterest')]
-    [string]$Platform = 'youtube'
+    [ValidateSet('instagram', 'twitter', 'facebook', 'pinterest')]
+    [string]$Platform = 'instagram'
 )
 
 $names = @{
-    youtube   = @{ File = 'youtube.txt';   Env = 'YOUTUBE_COOKIES_B64' }
     instagram = @{ File = 'instagram.txt'; Env = 'INSTAGRAM_COOKIES_B64' }
     twitter   = @{ File = 'twitter.txt';   Env = 'TWITTER_COOKIES_B64' }
     facebook  = @{ File = 'facebook.txt';  Env = 'FACEBOOK_COOKIES_B64' }

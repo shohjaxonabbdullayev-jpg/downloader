@@ -17,8 +17,6 @@ func cookiesPathForPlatform(platform string) string {
 		return "facebook.txt"
 	case "pinterest":
 		return "pinterest.txt"
-	case "youtube":
-		return "youtube.txt"
 	default:
 		return ""
 	}

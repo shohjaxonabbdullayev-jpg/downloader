@@ -6,6 +6,13 @@ import (
 	"telegram_bot_downloader/internal/model"
 )
 
+// noEngineStrategy disables downloads for a platform (e.g. YouTube removed from the bot).
+type noEngineStrategy struct{}
+
+func (noEngineStrategy) EnginesFor(*model.MediaInfo) []Engine { return nil }
+
+func (noEngineStrategy) OptionsMatrix(string) []Options { return nil }
+
 type ytOnlyStrategy struct {
 	yt Engine
 }

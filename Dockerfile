@@ -48,8 +48,8 @@ WORKDIR /app
 # Copy Go binary
 COPY --from=builder /app/downloader-bot .
 RUN mkdir -p downloads && \
-    touch youtube.txt instagram.txt twitter.txt facebook.txt pinterest.txt && \
-    chmod 600 youtube.txt instagram.txt twitter.txt facebook.txt pinterest.txt
+    touch instagram.txt twitter.txt facebook.txt pinterest.txt && \
+    chmod 600 instagram.txt twitter.txt facebook.txt pinterest.txt
 
 # Environment variables
 ENV PORT=10000

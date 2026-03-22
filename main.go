@@ -44,7 +44,6 @@ func main() {
 	}
 
 	// Optional Netscape cookies (see yt-dlp --cookies). Base64 writes the file at startup.
-	ensureCookiesFileFromEnv("YOUTUBE_COOKIES_B64", "youtube.txt")
 	ensureCookiesFileFromEnv("INSTAGRAM_COOKIES_B64", "instagram.txt")
 	ensureCookiesFileFromEnv("TWITTER_COOKIES_B64", "twitter.txt")
 	ensureCookiesFileFromEnv("FACEBOOK_COOKIES_B64", "facebook.txt")
@@ -162,7 +161,7 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi"))
 			continue
 		}
-		// Overall job timeout; yt-dlp no longer uses a separate 60s cap (was killing long YouTube downloads).
+		// Overall job timeout for yt-dlp / instaloader.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		ctx = downloader.ContextWithJobLogger(ctx, func(format string, args ...any) {
 			log.Printf("["+jobID+"] "+format, args...)
@@ -188,12 +187,6 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 				msgText = "🔒 Bu kontent private (login kerak bo‘lishi mumkin)."
 			} else if err == downloader.ErrNotFound {
 				msgText = "❌ Kontent topilmadi yoki o‘chirib yuborilgan."
-			} else if err != nil && youtubeBotOrSigninError(err.Error()) {
-				msgText = "🤖 YouTube: server IP uchun cookie kerak.\n\n" +
-					"Render: `YOUTUBE_COOKIES_B64` (Netscape `youtube.txt` faylini base64).\n\n" +
-					"Qo‘llanmalar:\n" +
-					"• Cookie format va `--cookies`: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp\n" +
-					"• YouTube uchun barqaror eksport (incognito + robots.txt): https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies"
 			}
 			bot.Send(tgbotapi.NewMessage(chatID, msgText))
 			_ = os.RemoveAll(jobDir)
@@ -215,10 +208,6 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 func heuristicInfo(rawURL string) *downloader.MediaInfo {
 	u := strings.ToLower(rawURL)
 	plat := urlx.PlatformFromURL(u)
-	if plat == "youtube" {
-		// Skip yt-dlp --dump-json here: one less full extraction before download (much faster).
-		return &downloader.MediaInfo{Platform: plat, Type: "video"}
-	}
 	typ := "unknown"
 	// Instagram has clear URL shapes.
 	if plat == "instagram" {
@@ -246,19 +235,9 @@ func extractLinks(text string) []string {
 	return links
 }
 
-func youtubeBotOrSigninError(errMsg string) bool {
-	m := strings.ToLower(errMsg)
-	if strings.Contains(m, "sign in to confirm") {
-		return true
-	}
-	return strings.Contains(m, "not a bot") && strings.Contains(m, "cookies")
-}
-
 func isSupported(u string) bool {
 	u = strings.ToLower(u)
 	return strings.Contains(u, "instagram") ||
-		strings.Contains(u, "youtube.com") ||
-		strings.Contains(u, "youtu.be") ||
 		strings.Contains(u, "tiktok") ||
 		strings.Contains(u, "twitter.com") ||
 		strings.Contains(u, "x.com") ||

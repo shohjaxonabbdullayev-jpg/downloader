@@ -68,28 +68,19 @@ func (s youtubeStrategy) EnginesFor(_ *model.MediaInfo) []Engine {
 }
 
 func (s youtubeStrategy) OptionsMatrix(url string) []Options {
-	cookies := cookiesFileForPlatform("youtube")
-
+	// YouTube: always incognito — no youtube.txt; yt-dlp gets --no-cookies.
 	// Retry variations:
 	// - normal
 	// - with user-agent
 	// - max-filesize (Telegram bot limit)
 	// - user-agent + max-filesize
-	// - cookies (+ user-agent) if youtube.txt exists
 	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-	opts := []Options{
-		{},
-		{UserAgent: ua},
-		{MaxFilesize: "50M"},
-		{UserAgent: ua, MaxFilesize: "50M"},
+	return []Options{
+		{NoCookies: true},
+		{UserAgent: ua, NoCookies: true},
+		{MaxFilesize: "50M", NoCookies: true},
+		{UserAgent: ua, MaxFilesize: "50M", NoCookies: true},
 	}
-	if cookies != "" && fileExists(cookies) {
-		opts = append(opts,
-			Options{CookiesFile: cookies, UserAgent: ua},
-			Options{CookiesFile: cookies, UserAgent: ua, MaxFilesize: "50M"},
-		)
-	}
-	return opts
 }
 
 func isYouTube(url string) bool {

@@ -16,6 +16,8 @@ type Options struct {
 	UserAgent   string
 	MaxHeight   string
 	MaxFilesize string // e.g. "50M"
+	// NoCookies forces anonymous yt-dlp/gallery-dl behavior (no cookie files).
+	NoCookies bool
 }
 
 type Strategy interface {

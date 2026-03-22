@@ -5,5 +5,9 @@ downloads/
 *.exe
 *.exe~
 
-# Sensitive cookies (provide via env instead)
+# Optional Netscape cookie files (or inject via *_COOKIES_B64 at startup)
 youtube.txt
+instagram.txt
+twitter.txt
+facebook.txt
+pinterest.txt

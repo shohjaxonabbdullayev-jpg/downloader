@@ -19,12 +19,12 @@ type Registry struct {
 
 func DefaultRegistry() Registry {
 	yt := YtDlpEngine{
-		CompatMP4Fallback: true,
-		MaxHeight:         "2160",
-		ConcurrentFragments: 8,
-		HTTPChunkSize:       "10M",
-		Retries:             3,
-		FragmentRetries:     3,
+		CompatMP4Fallback:   true,
+		MaxHeight:           "2160",
+		ConcurrentFragments: 16,
+		HTTPChunkSize:       "16M",
+		Retries:             2,
+		FragmentRetries:     2,
 	}
 	gd := GalleryDlEngine{}
 	ig := InstaloaderImagesEngine{}

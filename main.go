@@ -31,6 +31,8 @@ const (
 // Tune based on your CPU + bandwidth. 8 is a good default on most servers.
 const maxConcurrentDownloads = 8
 
+var linkURLRe = regexp.MustCompile(`https?://\S+`)
+
 /* ================= MAIN ================= */
 
 func main() {
@@ -41,16 +43,11 @@ func main() {
 		log.Fatal("BOT_TOKEN missing")
 	}
 
-	// Optional: provide cookies via env (recommended for deployment).
-	// If YOUTUBE_COOKIES_B64 is set, it overwrites youtube.txt on startup.
+	// Optional Netscape cookies (see yt-dlp --cookies). Base64 writes the file at startup.
 	ensureCookiesFileFromEnv("YOUTUBE_COOKIES_B64", "youtube.txt")
-	// If INSTAGRAM_COOKIES_B64 is set, it overwrites instagram.txt on startup.
 	ensureCookiesFileFromEnv("INSTAGRAM_COOKIES_B64", "instagram.txt")
-	// If TWITTER_COOKIES_B64 is set, it overwrites twitter.txt on startup.
 	ensureCookiesFileFromEnv("TWITTER_COOKIES_B64", "twitter.txt")
-	// If FACEBOOK_COOKIES_B64 is set, it overwrites facebook.txt on startup.
 	ensureCookiesFileFromEnv("FACEBOOK_COOKIES_B64", "facebook.txt")
-	// If PINTEREST_COOKIES_B64 is set, it overwrites pinterest.txt on startup.
 	ensureCookiesFileFromEnv("PINTEREST_COOKIES_B64", "pinterest.txt")
 
 	port := os.Getenv("PORT")
@@ -209,8 +206,8 @@ func heuristicInfo(rawURL string) *downloader.MediaInfo {
 	u := strings.ToLower(rawURL)
 	plat := urlx.PlatformFromURL(u)
 	if plat == "youtube" {
-		// Force metadata detection for YouTube (size checks, restrictions).
-		return nil
+		// Skip yt-dlp --dump-json here: one less full extraction before download (much faster).
+		return &downloader.MediaInfo{Platform: plat, Type: "video"}
 	}
 	typ := "unknown"
 	// Instagram has clear URL shapes.
@@ -228,8 +225,7 @@ func heuristicInfo(rawURL string) *downloader.MediaInfo {
 /* ================= LINK PARSER ================= */
 
 func extractLinks(text string) []string {
-	re := regexp.MustCompile(`https?://\S+`)
-	raw := re.FindAllString(text, -1)
+	raw := linkURLRe.FindAllString(text, -1)
 
 	var links []string
 	for _, u := range raw {

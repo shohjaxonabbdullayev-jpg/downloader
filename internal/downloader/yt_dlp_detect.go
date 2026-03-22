@@ -7,6 +7,7 @@ import (
 
 	"telegram_bot_downloader/internal/execx"
 	"telegram_bot_downloader/internal/model"
+	"telegram_bot_downloader/internal/platforms"
 )
 
 // YtDlpDetector uses "yt-dlp --dump-json <url>" to extract metadata before downloading.
@@ -35,7 +36,14 @@ func (d YtDlpDetector) Detect(ctx context.Context, url string) (*MediaInfo, erro
 		cmd = "yt-dlp"
 	}
 
-	res, err := execx.Run(ctx, cmd, "--no-warnings", "--dump-json", "--", url)
+	args := []string{"--no-warnings", "--dump-json"}
+	if ck := platforms.CookiesPathForURL(url); ck != "" {
+		args = append(args, "--cookies", ck)
+	} else {
+		args = append(args, "--no-cookies")
+	}
+	args = append(args, "--", url)
+	res, err := execx.Run(ctx, cmd, args...)
 	if err != nil {
 		// Keep error but return a best-effort typed error if possible.
 		msg := strings.ToLower(res.Output)

@@ -49,14 +49,19 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 		"--no-part",
 	}
 
-	if opts.NoCookies {
+	ck := strings.TrimSpace(opts.CookiesFile)
+	if ck != "" {
+		if st, err := os.Stat(ck); err == nil && !st.IsDir() && st.Size() > 0 {
+			args = append(args, "--cookies", ck)
+		} else {
+			args = append(args, "--no-cookies")
+		}
+	} else {
 		args = append(args, "--no-cookies")
 	}
+
 	if opts.UserAgent != "" {
 		args = append(args, "--user-agent", opts.UserAgent)
-	}
-	if opts.CookiesFile != "" && !opts.NoCookies {
-		args = append(args, "--cookies", opts.CookiesFile)
 	}
 	if opts.MaxFilesize != "" {
 		args = append(args, "--max-filesize", opts.MaxFilesize)
@@ -175,10 +180,11 @@ func (e GalleryDlEngine) Download(ctx context.Context, url string, jobDir string
 		cmd = "gallery-dl"
 	}
 	args := []string{"-d", jobDir}
-	// Use cookies when available (needed for Instagram login wall).
-	// gallery-dl supports -C/--cookies with Netscape cookies.txt format.
-	if opts.CookiesFile != "" && !opts.NoCookies {
-		args = append(args, "-C", opts.CookiesFile)
+	ck := strings.TrimSpace(opts.CookiesFile)
+	if ck != "" {
+		if st, err := os.Stat(ck); err == nil && !st.IsDir() && st.Size() > 0 {
+			args = append(args, "-C", ck)
+		}
 	}
 	args = append(args, "--", url)
 

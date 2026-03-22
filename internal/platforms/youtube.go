@@ -68,19 +68,24 @@ func (s youtubeStrategy) EnginesFor(_ *model.MediaInfo) []Engine {
 }
 
 func (s youtubeStrategy) OptionsMatrix(url string) []Options {
-	// YouTube: always incognito — no youtube.txt; yt-dlp gets --no-cookies.
-	// Retry variations:
-	// - normal
-	// - with user-agent
-	// - max-filesize (Telegram bot limit)
-	// - user-agent + max-filesize
+	// Anonymous attempts first (--no-cookies); optional youtube.txt retries last.
+	// Try Telegram-sized formats first to avoid downloading huge files then failing the size check.
 	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-	return []Options{
-		{NoCookies: true},
-		{UserAgent: ua, NoCookies: true},
-		{MaxFilesize: "50M", NoCookies: true},
-		{UserAgent: ua, MaxFilesize: "50M", NoCookies: true},
+	opts := []Options{
+		{MaxFilesize: "50M"},
+		{UserAgent: ua, MaxFilesize: "50M"},
+		{},
+		{UserAgent: ua},
 	}
+	if ck := CookiesPathForURL(url); ck != "" {
+		opts = append(opts,
+			Options{CookiesFile: ck, MaxFilesize: "50M"},
+			Options{CookiesFile: ck, UserAgent: ua, MaxFilesize: "50M"},
+			Options{CookiesFile: ck},
+			Options{CookiesFile: ck, UserAgent: ua},
+		)
+	}
+	return opts
 }
 
 func isYouTube(url string) bool {

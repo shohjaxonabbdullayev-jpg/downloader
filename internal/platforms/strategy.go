@@ -12,12 +12,10 @@ type Engine interface {
 }
 
 type Options struct {
-	CookiesFile string
+	CookiesFile string // Netscape cookies.txt; empty => yt-dlp --no-cookies
 	UserAgent   string
 	MaxHeight   string
 	MaxFilesize string // e.g. "50M"
-	// NoCookies forces anonymous yt-dlp/gallery-dl behavior (no cookie files).
-	NoCookies bool
 }
 
 type Strategy interface {

@@ -1,11 +1,9 @@
 package platforms
 
 import (
-	"os"
 	"strings"
 
 	"telegram_bot_downloader/internal/model"
-	"telegram_bot_downloader/internal/urlx"
 )
 
 type simpleFallbackStrategy struct {
@@ -41,44 +39,17 @@ func (s instagramStrategy) OptionsMatrix(url string) []Options {
 }
 
 func defaultRetryOptions(url string) []Options {
-	plat := urlx.PlatformFromURL(url)
-	cookies := cookiesFileForPlatform(plat)
-
+	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 	opts := []Options{
-		// normal
 		{MaxHeight: "2160"},
+		{UserAgent: ua, MaxHeight: "2160"},
 	}
-
-	// Only add cookie-based attempts if the cookie file exists.
-	if cookies != "" && fileExists(cookies) {
+	if ck := CookiesPathForURL(url); ck != "" {
 		opts = append(opts,
-			Options{CookiesFile: cookies, MaxHeight: "2160"},
-			Options{CookiesFile: cookies, UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", MaxHeight: "2160"},
+			Options{CookiesFile: ck, MaxHeight: "2160"},
+			Options{CookiesFile: ck, UserAgent: ua, MaxHeight: "2160"},
 		)
 	}
-
 	return opts
-}
-
-func cookiesFileForPlatform(platform string) string {
-	switch platform {
-	case "instagram":
-		return "instagram.txt"
-	case "twitter":
-		return "twitter.txt"
-	case "facebook":
-		return "facebook.txt"
-	case "pinterest":
-		return "pinterest.txt"
-	case "youtube":
-		return "youtube.txt"
-	default:
-		return ""
-	}
-}
-
-func fileExists(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && !st.IsDir() && st.Size() > 0
 }
 

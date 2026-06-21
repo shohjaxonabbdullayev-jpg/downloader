@@ -1,0 +1,26 @@
+package platforms
+
+import (
+	"context"
+
+	"telegram_bot_downloader/internal/model"
+)
+
+type Engine interface {
+	Name() string
+	Download(ctx context.Context, url string, jobDir string, opts Options) (*model.DownloadResult, error)
+}
+
+type Options struct {
+	CookiesFile string // Netscape cookies.txt; empty => yt-dlp --no-cookies
+	UserAgent   string
+	MaxHeight   string
+	MaxFilesize string // e.g. "50M"
+	MediaType   string // video, image, carousel, unknown — guides format selection
+}
+
+type Strategy interface {
+	EnginesFor(info *model.MediaInfo) []Engine
+	OptionsMatrix(url string) []Options
+}
+

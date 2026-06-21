@@ -1,0 +1,16 @@
+.env*
+
+# Runtime artifacts
+downloads/
+*.exe
+*.exe~
+
+# Local Python venv + compiled binary
+.venv/
+downloader-bot
+
+# Optional Netscape cookie files (or inject via *_COOKIES_B64 at startup)
+instagram.txt
+twitter.txt
+facebook.txt
+pinterest.txt

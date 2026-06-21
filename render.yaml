@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: telegram-bot-downloader
+    env: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000

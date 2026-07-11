@@ -25,15 +25,20 @@ type YtDlpEngine struct {
 	Retries             int
 	FragmentRetries     int
 
-	// Proxy, if set, routes all yt-dlp traffic through it (e.g. a residential
-	// proxy). This is the most reliable way to download YouTube from a cloud/
-	// datacenter IP without cookies. Empty => direct connection.
-	Proxy string
-	// YouTubePlayerClient is passed as yt-dlp's youtube:player_client extractor
-	// arg. Alternate clients (tv, mweb, web_safari, …) often bypass YouTube's
-	// "confirm you're not a bot" check that otherwise forces a login/cookies.
-	YouTubePlayerClient string
+	// Impersonate, if non-empty (e.g. "chrome"), makes yt-dlp present a real
+	// browser TLS/JA3 fingerprint via curl_cffi (--impersonate). This is the
+	// single most effective way to fetch public media from a flagged datacenter
+	// IP without cookies — it defeats the "you look like a bot" detection that
+	// otherwise blocks anonymous requests. Empty => no impersonation (a browser
+	// User-Agent is still sent as a weaker fallback). Detected at startup via
+	// detectImpersonateTarget so it self-disables when curl_cffi isn't installed.
+	Impersonate string
 }
+
+// browserUA is a normal desktop Chrome User-Agent. Sent on every yt-dlp request
+// (unless we're impersonating, which sets its own matching UA) so platforms that
+// reject yt-dlp's default UA still serve us.
+const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 func (e YtDlpEngine) Name() string { return "yt-dlp" }
 
@@ -53,41 +58,38 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 
 	ul := strings.ToLower(url)
 	isFB := strings.Contains(ul, "facebook.com") || strings.Contains(ul, "fb.watch")
-	isYT := strings.Contains(ul, "youtube.com") || strings.Contains(ul, "youtu.be")
 
 	args := []string{
 		// No --quiet: keep stderr in logs when a run fails (Render/Docker).
 		"--no-warnings",
 		"--no-part",
-		// Fail fast on stalled connections instead of hanging the whole job.
-		"--socket-timeout", "15",
+		// Abort a genuinely stalled connection, but give slow datacenter links
+		// enough room to keep a real (progressing) download alive.
+		"--socket-timeout", "30",
+		// Keep playlist expansion ON so multi-item carousels (Instagram /p/,
+		// multi-image tweets, Facebook albums) download every item, not just one.
+		"--yes-playlist",
 	}
-	// YouTube must NOT expand playlists — a watch?v=...&list=... link would pull
-	// the entire list. Everywhere else, keep playlist expansion ON so multi-item
-	// carousels (Instagram /p/, multi-image tweets, Facebook albums) download
-	// every item instead of just the first.
-	if isYT {
-		args = append(args, "--no-playlist")
+
+	// Use a per-platform Netscape cookie file if one was provided via env
+	// (see ensureCookiesFileFromEnv); without a file we run anonymously.
+	if ck := CookiesPathForURL(url); ck != "" {
+		args = append(args, "--cookies", ck)
 	} else {
-		args = append(args, "--yes-playlist")
+		args = append(args, "--no-cookies")
 	}
 
-	// This bot has no login sessions configured; always run anonymously.
-	args = append(args, "--no-cookies")
-
-	// Optional proxy (e.g. a residential proxy) — the most reliable way to fetch
-	// YouTube from a cloud IP without cookies.
-	if p := strings.TrimSpace(e.Proxy); p != "" {
-		args = append(args, "--proxy", p)
-	}
-	// YouTube on datacenter IPs throws "Sign in to confirm you're not a bot".
-	// Using alternate player clients usually avoids that without cookies.
-	if isYT && strings.TrimSpace(e.YouTubePlayerClient) != "" {
-		args = append(args, "--extractor-args", "youtube:player_client="+strings.TrimSpace(e.YouTubePlayerClient))
-	}
-
-	if opts.UserAgent != "" {
+	// Present a real browser identity so platforms that block yt-dlp's default
+	// User-Agent (common from datacenter IPs) still serve public media.
+	//   - Impersonation (curl_cffi) is best: real browser TLS fingerprint + UA.
+	//   - Otherwise fall back to a browser User-Agent string.
+	switch {
+	case strings.TrimSpace(e.Impersonate) != "":
+		args = append(args, "--impersonate", strings.TrimSpace(e.Impersonate))
+	case opts.UserAgent != "":
 		args = append(args, "--user-agent", opts.UserAgent)
+	default:
+		args = append(args, "--user-agent", browserUA)
 	}
 	if opts.MaxFilesize != "" {
 		args = append(args, "--max-filesize", opts.MaxFilesize)
@@ -130,7 +132,7 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	// would skip non-video items, and carousels need every item. Do a permissive
 	// pass first that accepts photos and grabs all entries.
 	isMedia := strings.EqualFold(opts.MediaType, "image") || strings.EqualFold(opts.MediaType, "carousel")
-	if isMedia && !isYT {
+	if isMedia {
 		mediaArgs := append([]string{}, args...)
 		mediaArgs = append(mediaArgs, "-f", "best", "--print", "after_move:filepath", "-o", out, "--", url)
 		files, err := runYtDlpAndCollectFiles(ctx, cmd, mediaArgs, jobDir)
@@ -151,14 +153,7 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	// is the single biggest latency win.
 	fastArgs := append([]string{}, args...)
 	fastFormat := fmt.Sprintf("best[ext=mp4][height<=%s]/best[height<=%s]/best[ext=mp4]/best", maxH, maxH)
-	switch {
-	case isYT:
-		// YouTube serves separate video/audio streams and ranks AV1/VP9 highest,
-		// but Telegram only reliably plays H.264 (avc1)+AAC — anything else shows
-		// audio over a frozen frame. Force avc1 video + m4a audio, height-bounded,
-		// and fall back to the 360p avc1 progressive before ever touching AV1.
-		fastFormat = fmt.Sprintf("bestvideo[vcodec^=avc1][height<=%s]+bestaudio[ext=m4a]/best[vcodec^=avc1][height<=%s]/best[ext=mp4][height<=%s]/best[height<=%s]/best", maxH, maxH, maxH, maxH)
-	case isFB:
+	if isFB {
 		// Facebook playlists / reels: not every entry is mp4; prefer a progressive
 		// mp4 first (no merge), then fall back to merged streams.
 		fastFormat = fmt.Sprintf("best[ext=mp4][height<=%s]/bestvideo[height<=%s]+bestaudio/best[height<=%s]/best", maxH, maxH, maxH)
@@ -166,18 +161,11 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	if opts.MaxFilesize != "" {
 		// Best effort to stay under the Telegram bot limit (approx).
 		fastFormat = fmt.Sprintf("best[ext=mp4][height<=%s][filesize<%s]/best[height<=%s][filesize<%s]/best[ext=mp4][filesize<%s]/best", maxH, opts.MaxFilesize, maxH, opts.MaxFilesize, opts.MaxFilesize)
-		switch {
-		case isYT:
-			fastFormat = fmt.Sprintf("bestvideo[vcodec^=avc1][height<=%s][filesize<%s]+bestaudio[ext=m4a]/best[vcodec^=avc1][height<=%s][filesize<%s]/best[ext=mp4][height<=%s][filesize<%s]/best[filesize<%s]/best", maxH, opts.MaxFilesize, maxH, opts.MaxFilesize, maxH, opts.MaxFilesize, opts.MaxFilesize)
-		case isFB:
+		if isFB {
 			fastFormat = fmt.Sprintf("best[ext=mp4][height<=%s][filesize<%s]/bestvideo[height<=%s]+bestaudio/best[ext=mp4][filesize<%s]/best[ext=webm][filesize<%s]/best[filesize<%s]/best", maxH, opts.MaxFilesize, maxH, opts.MaxFilesize, opts.MaxFilesize, opts.MaxFilesize)
 		}
 	}
 	fastArgs = append(fastArgs, "-f", fastFormat)
-	if isYT {
-		// YouTube's fast path is a merge, so force a streamable mp4 container.
-		fastArgs = append(fastArgs, "--merge-output-format", "mp4", "--postprocessor-args", "ffmpeg:-movflags +faststart")
-	}
 	fastArgs = append(fastArgs,
 		"--print", "after_move:filepath",
 		"-o", out,
@@ -188,6 +176,10 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	if err == nil && len(files) > 0 {
 		return &model.DownloadResult{Files: files, Size: totalSize(files)}, nil
 	}
+	// Reliability-first: never give up after the fast pass. A datacenter IP often
+	// returns an ambiguous "not available / sign in / rate-limited" that a
+	// different format selector or a retry actually clears, so always fall through
+	// to the quality and compat passes below.
 
 	// Quality fallback: best MP4 video + best M4A audio (may require merge).
 	qualityArgs := append([]string{}, args...)
@@ -246,36 +238,6 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	return nil, fmt.Errorf("yt-dlp produced no files")
 }
 
-// GalleryDlEngine is used for Facebook multi-image carousels; yt-dlp’s Facebook extractor only handles Video nodes, not photos.
-type GalleryDlEngine struct {
-	Cmd string
-}
-
-func (e GalleryDlEngine) Name() string { return "gallery-dl" }
-
-func (e GalleryDlEngine) Download(ctx context.Context, url string, jobDir string, opts Options) (*model.DownloadResult, error) {
-	cmd := e.Cmd
-	if cmd == "" {
-		cmd = "gallery-dl"
-	}
-	// No login sessions: gallery-dl runs anonymously (public content only).
-	args := []string{"-d", jobDir, "--", url}
-
-	res, err := execx.Run(ctx, cmd, args...)
-	if err != nil {
-		out := strings.TrimSpace(res.Output)
-		if out != "" {
-			return nil, fmt.Errorf("%w: %s", err, out)
-		}
-		return nil, err
-	}
-	files := allFiles(jobDir)
-	if len(files) == 0 {
-		return nil, fmt.Errorf("gallery-dl produced no files")
-	}
-	return &model.DownloadResult{Files: files, Size: totalSize(files)}, nil
-}
-
 type InstaloaderImagesEngine struct {
 	// Python is the python executable to use (e.g. "python3" or "python").
 	// If empty, the engine will try "python3" and then "python".
@@ -332,6 +294,7 @@ except Exception as e:
 
 shortcode = sys.argv[1]
 target_dir = sys.argv[2]
+cookiefile = sys.argv[3] if len(sys.argv) > 3 else ""
 
 L = instaloader.Instaloader(
     dirname_pattern=target_dir,
@@ -345,6 +308,17 @@ L = instaloader.Instaloader(
     quiet=True,
 )
 
+# Load an Instagram session from a Netscape cookies file if provided. A logged-in
+# session is what lets Instagram work from a flagged datacenter IP.
+if cookiefile and os.path.exists(cookiefile):
+    try:
+        import http.cookiejar
+        cj = http.cookiejar.MozillaCookieJar(cookiefile)
+        cj.load(ignore_discard=True, ignore_expires=True)
+        L.context._session.cookies.update(cj)
+    except Exception as e:
+        print("COOKIE_LOAD_WARN:", repr(e))
+
 try:
     post = Post.from_shortcode(L.context, shortcode)
     L.download_post(post, target=".")
@@ -354,10 +328,11 @@ except Exception as e:
     raise
 `
 
+	cookieFile := CookiesPathForURL(url) // "" when no Instagram cookies were provided
 	var lastErr error
 	var lastOut string
 	for _, candidate := range resolved {
-		res, err := execx.Run(ctx, candidate, "-c", code, shortcode, jobDir)
+		res, err := execx.Run(ctx, candidate, "-c", code, shortcode, jobDir, cookieFile)
 		if err == nil {
 			lastErr = nil
 			break
@@ -419,6 +394,44 @@ func filePathWithinDir(file, dir string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// detectImpersonateTarget probes whether this yt-dlp can impersonate a browser
+// (needs curl_cffi). It returns the best available client name ("chrome", …) to
+// pass to --impersonate, or "" when impersonation is unavailable — so the engine
+// self-configures and never passes --impersonate to a yt-dlp that can't do it
+// (which would error). Run once at startup.
+func detectImpersonateTarget(cmd string) string {
+	if strings.TrimSpace(cmd) == "" {
+		cmd = "yt-dlp"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, cmd, "--list-impersonate-targets").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	// A line names a client (Chrome, Edge, Safari, Firefox, …); if its Source
+	// column says "(unavailable)" the required backend isn't installed. Prefer
+	// Chrome, then other mainstream browsers.
+	available := map[string]bool{}
+	for _, ln := range strings.Split(string(out), "\n") {
+		low := strings.ToLower(strings.TrimSpace(ln))
+		if low == "" || strings.Contains(low, "unavailable") {
+			continue
+		}
+		for _, target := range []string{"chrome", "edge", "safari", "firefox"} {
+			if strings.HasPrefix(low, target) {
+				available[target] = true
+			}
+		}
+	}
+	for _, target := range []string{"chrome", "edge", "safari", "firefox"} {
+		if available[target] {
+			return target
+		}
+	}
+	return ""
 }
 
 func runYtDlpAndCollectFiles(ctx context.Context, cmd string, args []string, jobDir string) ([]string, error) {

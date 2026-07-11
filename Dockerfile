@@ -36,11 +36,15 @@ RUN apt-get update && \
         git && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Install yt-dlp, gallery-dl (Facebook carousels), instaloader in isolated venv
+# ✅ Install yt-dlp + instaloader (Instagram photos) in an isolated venv.
+# gallery-dl is intentionally NOT installed — it login-redirects on these
+# platforms and was causing media download errors; the bot never invokes it.
+# curl_cffi enables yt-dlp's browser impersonation (--impersonate), which lets us
+# fetch public media from this datacenter IP without cookies by presenting a real
+# browser TLS fingerprint. Without it yt-dlp still runs, just without impersonation.
 RUN python3 -m venv /opt/yt && \
-    /opt/yt/bin/pip install --no-cache-dir yt-dlp gallery-dl instaloader && \
+    /opt/yt/bin/pip install --no-cache-dir yt-dlp curl_cffi instaloader && \
     ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
-    ln -s /opt/yt/bin/gallery-dl /usr/local/bin/gallery-dl && \
     ln -s /opt/yt/bin/instaloader /usr/local/bin/instaloader
 
 # Create app directory

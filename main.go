@@ -118,7 +118,9 @@ func main() {
 }
 
 func ensureCookiesFileFromEnv(envVar string, targetPath string) {
-	b64 := strings.TrimSpace(os.Getenv(envVar))
+	// Strip ALL whitespace/newlines so wrapped base64 (e.g. `base64` without -w0)
+	// still decodes.
+	b64 := strings.Join(strings.Fields(os.Getenv(envVar)), "")
 	if b64 == "" {
 		return
 	}
@@ -127,11 +129,13 @@ func ensureCookiesFileFromEnv(envVar string, targetPath string) {
 		log.Printf("cookies env decode failed (%s): %v", envVar, err)
 		return
 	}
+	// Normalize CRLF -> LF; yt-dlp rejects Windows line endings in cookie files on Linux.
+	raw = []byte(strings.ReplaceAll(string(raw), "\r\n", "\n"))
 	if err := os.WriteFile(targetPath, raw, 0600); err != nil {
 		log.Printf("cookies write failed (%s -> %s): %v", envVar, targetPath, err)
 		return
 	}
-	log.Printf("cookies file written: %s", targetPath)
+	log.Printf("cookies file written: %s (%d bytes)", targetPath, len(raw))
 }
 
 /* ================= MESSAGE HANDLER ================= */
@@ -143,7 +147,7 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 	if text == "/start" {
 		if _, err := bot.Send(tgbotapi.NewMessage(
 			chatID,
-			"👋 Salom!\n\nInstagram, TikTok, YouTube, X, Facebook yoki Pinterest link yuboring.\nVideo va rasmlarni **eng mos va ochiladigan formatda** yuklab beraman 🚀",
+			"👋 Salom!\n\nInstagram, TikTok, X, Facebook yoki Pinterest link yuboring.\nVideo va rasmlarni **eng mos va ochiladigan formatda** yuklab beraman 🚀",
 		)); err != nil {
 			log.Printf("[send] chat_id=%d err=%v", chatID, err)
 		}
@@ -156,6 +160,13 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 	}
 
 	for _, link := range links {
+		// YouTube isn't supported and we stay silent for it — no reply at all.
+		// Skip the link so a YouTube-only message produces no response, while any
+		// other supported links in the same message are still handled.
+		if urlx.PlatformFromURL(link) == "youtube" {
+			continue
+		}
+
 		key := cacheKeyForURL(link)
 
 		// Fast path: this link was uploaded before -> re-send by Telegram file_id.
@@ -173,25 +184,6 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 
 		// Heuristic platform/type avoids an expensive yt-dlp --dump-json probe.
 		info := heuristicInfo(link)
-
-		// Fastest cold path: hand Telegram the direct media URL so it fetches the
-		// bytes itself — no bot download or re-upload. Any failure falls through to
-		// the normal download path below.
-		if urlPassEligible(info) {
-			urlStart := time.Now()
-			if urls := ytDlpDirectURLs(link); len(urls) == 1 {
-				if m, err := sendVideoByURL(bot, chatID, urls[0], msg.MessageID); err == nil {
-					if kind, fid := classifyMedia(m); fid != "" {
-						fidCache.Put(key, []fidcache.Item{{Kind: kind, FileID: fid}})
-					}
-					log.Printf("[urlpass] url=%q ok in %s (telegram fetched directly)", link, time.Since(urlStart).Truncate(10*time.Millisecond))
-					deleteMsg(bot, chatID, waitMsg, werr)
-					continue
-				} else {
-					log.Printf("[urlpass] url=%q telegram fetch failed, falling back: %v", link, err)
-				}
-			}
-		}
 
 		jobID, jobDir, jerr := downloader.NewJobDir(downloadsDir)
 		if jerr != nil {
@@ -262,7 +254,8 @@ func heuristicInfo(rawURL string) *downloader.MediaInfo {
 		}
 	}
 	if plat == "facebook" {
-		// Video-style URLs: yt-dlp first. Posts / albums / carousels: gallery-dl first (photos).
+		// Tag the type so yt-dlp picks a video vs. permissive (photo) format pass;
+		// Facebook runs on yt-dlp only (no gallery-dl).
 		videoish := strings.Contains(u, "fb.watch") ||
 			strings.Contains(u, "/reel") ||
 			strings.Contains(u, "/videos/") ||
@@ -464,57 +457,4 @@ func deleteMsg(bot *tgbotapi.BotAPI, chatID int64, m tgbotapi.Message, sendErr e
 		return
 	}
 	_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: m.MessageID})
-}
-
-// urlPassEligible reports whether we can hand Telegram the direct media URL so it
-// fetches the bytes itself (no bot download/upload). Only single-file video
-// platforms qualify — not YouTube (needs stream merging), and not image/carousel
-// posts (handled by instaloader/gallery-dl).
-func urlPassEligible(info *downloader.MediaInfo) bool {
-	if info == nil {
-		return false
-	}
-	if strings.Contains(strings.ToLower(info.Platform), "youtube") {
-		return false
-	}
-	switch strings.ToLower(info.Type) {
-	case "image", "carousel":
-		return false
-	}
-	return true
-}
-
-// ytDlpDirectURLs resolves the direct media URL(s) without downloading (yt-dlp -g).
-// Exactly one URL = a single progressive file we can hand to Telegram. Zero
-// (extraction failed / image post) or more than one (separate video+audio needing
-// a merge) means the caller should fall back to the normal download.
-func ytDlpDirectURLs(link string) []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "yt-dlp",
-		"--no-warnings", "--no-playlist", "--no-cookies",
-		"--socket-timeout", "10",
-		"-f", "best[ext=mp4]/best",
-		"-g", "--", link).Output()
-	if err != nil {
-		return nil
-	}
-	var urls []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if u := strings.TrimSpace(line); strings.HasPrefix(u, "http") {
-			urls = append(urls, u)
-		}
-	}
-	return urls
-}
-
-// sendVideoByURL asks Telegram to fetch and send media from a direct URL. Returns
-// an error (so the caller falls back to download+upload) when Telegram can't fetch
-// it — e.g. the file exceeds Telegram's ~20MB URL limit or the CDN blocks it.
-func sendVideoByURL(bot *tgbotapi.BotAPI, chatID int64, mediaURL string, replyTo int) (tgbotapi.Message, error) {
-	v := tgbotapi.NewVideo(chatID, tgbotapi.FileURL(mediaURL))
-	v.Caption = "⬇️ @downloaderin123_bot"
-	v.SupportsStreaming = true
-	v.ReplyToMessageID = replyTo
-	return bot.Send(v)
 }

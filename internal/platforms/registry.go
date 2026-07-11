@@ -3,7 +3,6 @@ package platforms
 import (
 	"os"
 	"strings"
-	"time"
 
 	"telegram_bot_downloader/internal/model"
 	"telegram_bot_downloader/internal/urlx"
@@ -22,50 +21,47 @@ type Registry struct {
 func DefaultRegistry() Registry {
 	yt := YtDlpEngine{
 		CompatMP4Fallback: true,
-		// Height cap (env MAX_HEIGHT, default 720): smaller files download AND
-		// upload to Telegram much faster. Raise to 1080 if quality matters more.
+		// Height cap (env MAX_HEIGHT, default 1080). Smaller = faster download AND
+		// upload; 1080 keeps horizontal videos crisp. Set MAX_HEIGHT=720 to trade
+		// quality for speed.
 		MaxHeight:           maxHeight(),
 		ConcurrentFragments: 16,
 		// yt-dlp: YouTube and others throttle http chunk sizes >10M (FAQ).
 		HTTPChunkSize:   "10M",
 		Retries:         2,
 		FragmentRetries: 2,
-		// Bound each individual yt-dlp attempt so one stuck run can't consume the
-		// whole job budget before the fallbacks get a chance.
-		Timeout: 90 * time.Second,
-		// YouTube anti-bot mitigations, tunable via env without a code redeploy.
-		Proxy:               strings.TrimSpace(os.Getenv("YTDLP_PROXY")),
-		YouTubePlayerClient: youtubePlayerClient(),
+		// No per-attempt timeout: a slow-but-progressing datacenter download must
+		// be allowed to finish. Stalls are caught by --socket-timeout, and the
+		// whole job is still bounded by the 5-minute context in main.go.
+		//
+		// Browser impersonation (curl_cffi) is the strongest way to fetch public
+		// media from a flagged datacenter IP without cookies. Auto-detected so it
+		// self-disables when curl_cffi isn't installed.
+		Impersonate: detectImpersonateTarget("yt-dlp"),
 	}
 	// INSTALOADER_PYTHON lets a deployment point at a specific Python that has
 	// instaloader installed (e.g. a local venv). Empty => the engine's built-in
 	// candidate list, which includes the Docker image's /opt/yt venv.
 	ig := InstaloaderImagesEngine{Python: strings.TrimSpace(os.Getenv("INSTALOADER_PYTHON"))}
-	gd := GalleryDlEngine{}
 
 	return Registry{
+		// Instagram: video -> yt-dlp; photo/carousel -> Instaloader (the only engine
+		// that fetches IG photos without cookies) then yt-dlp as a fallback.
 		Instagram: instagramStrategy{insta: ig, yt: yt},
-		YouTube:   ytOnlyStrategy{yt: yt},
-		// Video-first, gallery-dl fallback for photo posts / multi-image tweets.
-		TikTok:  engineListStrategy{video: []Engine{yt, gd}, media: []Engine{gd, yt}},
-		Twitter: engineListStrategy{video: []Engine{yt, gd}, media: []Engine{gd, yt}},
-		// Pinterest is mostly images: gallery-dl first, yt-dlp for the occasional video pin.
-		Pinterest: engineListStrategy{video: []Engine{gd, yt}, media: []Engine{gd, yt}},
-		Facebook:  facebookStrategy{yt: yt, gd: gd},
+		// YouTube downloading is removed — it can't be fetched from a datacenter IP
+		// without a proxy/cookies, and no free workaround is reliable. main.go
+		// replies "not supported" for YouTube links; this no-engine strategy is a
+		// safety net for any YouTube URL form that slips past that check.
+		YouTube: noEngineStrategy{},
+		// gallery-dl is never used (it login-redirects on these platforms and was
+		// causing media download errors). Instaloader is Instagram-specific, so
+		// every other platform runs on yt-dlp alone — for both video and images.
+		TikTok:    ytOnlyStrategy{yt: yt},
+		Twitter:   ytOnlyStrategy{yt: yt},
+		Pinterest: ytOnlyStrategy{yt: yt},
+		Facebook:  ytOnlyStrategy{yt: yt},
 		Default:   ytOnlyStrategy{yt: yt},
 	}
-}
-
-// youtubePlayerClient picks the yt-dlp youtube:player_client value. YouTube
-// frequently changes which clients work cookie-free from datacenter IPs, so this
-// is overridable via the YT_PLAYER_CLIENT env var (comma-separated client list)
-// without rebuilding. The default favors clients that tend to skip the
-// "confirm you're not a bot" check.
-func youtubePlayerClient() string {
-	if v := strings.TrimSpace(os.Getenv("YT_PLAYER_CLIENT")); v != "" {
-		return v
-	}
-	return "tv,web_safari,mweb,default"
 }
 
 // maxHeight is the video height cap, overridable via MAX_HEIGHT. Default 1080:

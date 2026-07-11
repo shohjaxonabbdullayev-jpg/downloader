@@ -18,8 +18,9 @@ yt-dlp_bin
 *.exe
 *.exe~
 
-# Cookie files — the bot runs cookie-free
+# Cookie files — injected at runtime via *_COOKIES_B64 env, never baked in
 instagram.txt
+youtube.txt
 twitter.txt
 facebook.txt
 pinterest.txt

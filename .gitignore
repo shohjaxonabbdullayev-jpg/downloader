@@ -11,6 +11,7 @@ downloader-bot
 
 # Optional Netscape cookie files (or inject via *_COOKIES_B64 at startup)
 instagram.txt
+youtube.txt
 twitter.txt
 facebook.txt
 pinterest.txt

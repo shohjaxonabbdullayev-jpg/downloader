@@ -42,8 +42,16 @@ RUN apt-get update && \
 # curl_cffi enables yt-dlp's browser impersonation (--impersonate), which lets us
 # fetch public media from this datacenter IP without cookies by presenting a real
 # browser TLS fingerprint. Without it yt-dlp still runs, just without impersonation.
+#
+# instaloader is pinned to the hyperplural fork (PR #2706, commit b1d2333): around
+# June 2026 Instagram deprecated the GraphQL doc_id the released instaloader (<=4.15.2)
+# used, so anonymous photo/carousel fetches started 403-ing ("Fetching Post metadata
+# failed"). The fork switches to the new PolarisPostRootQuery endpoint + CSRF token,
+# restoring anonymous IG image downloads. Revert to plain "instaloader" once upstream
+# merges & releases the fix. (git is already installed above for the git+ install.)
 RUN python3 -m venv /opt/yt && \
-    /opt/yt/bin/pip install --no-cache-dir yt-dlp curl_cffi instaloader && \
+    /opt/yt/bin/pip install --no-cache-dir yt-dlp curl_cffi \
+        "git+https://github.com/hyperplural/instaloader.git@b1d233362e335cbbccba5c5e4b614a1032764118" && \
     ln -s /opt/yt/bin/yt-dlp /usr/local/bin/yt-dlp && \
     ln -s /opt/yt/bin/instaloader /usr/local/bin/instaloader
 

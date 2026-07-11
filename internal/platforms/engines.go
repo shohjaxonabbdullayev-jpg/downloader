@@ -79,17 +79,21 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 		args = append(args, "--no-cookies")
 	}
 
-	// Present a real browser identity so platforms that block yt-dlp's default
-	// User-Agent (common from datacenter IPs) still serve public media.
-	//   - Impersonation (curl_cffi) is best: real browser TLS fingerprint + UA.
-	//   - Otherwise fall back to a browser User-Agent string.
-	switch {
-	case strings.TrimSpace(e.Impersonate) != "":
-		args = append(args, "--impersonate", strings.TrimSpace(e.Impersonate))
-	case opts.UserAgent != "":
-		args = append(args, "--user-agent", opts.UserAgent)
-	default:
-		args = append(args, "--user-agent", browserUA)
+	// Always send a browser User-Agent so platforms that reject yt-dlp's default
+	// UA still serve public media. This is cheap and covers the common case.
+	ua := browserUA
+	if opts.UserAgent != "" {
+		ua = opts.UserAgent
+	}
+	args = append(args, "--user-agent", ua)
+
+	// Browser IMPERSONATION (curl_cffi) is the stronger anti-block measure but
+	// adds ~0.5s per request, so it's escalated to the fallback passes only — the
+	// working platforms succeed on the fast pass and never pay for it. Empty when
+	// curl_cffi isn't installed. --impersonate's Chrome identity matches browserUA.
+	var impersonateArgs []string
+	if t := strings.TrimSpace(e.Impersonate); t != "" {
+		impersonateArgs = []string{"--impersonate", t}
 	}
 	if opts.MaxFilesize != "" {
 		args = append(args, "--max-filesize", opts.MaxFilesize)
@@ -134,6 +138,7 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	isMedia := strings.EqualFold(opts.MediaType, "image") || strings.EqualFold(opts.MediaType, "carousel")
 	if isMedia {
 		mediaArgs := append([]string{}, args...)
+		mediaArgs = append(mediaArgs, impersonateArgs...) // image posts are rarer; give them the anti-block muscle
 		mediaArgs = append(mediaArgs, "-f", "best", "--print", "after_move:filepath", "-o", out, "--", url)
 		files, err := runYtDlpAndCollectFiles(ctx, cmd, mediaArgs, jobDir)
 		if err == nil && len(files) > 0 {
@@ -182,7 +187,9 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	// to the quality and compat passes below.
 
 	// Quality fallback: best MP4 video + best M4A audio (may require merge).
+	// Escalate to browser impersonation here — the fast pass already failed.
 	qualityArgs := append([]string{}, args...)
+	qualityArgs = append(qualityArgs, impersonateArgs...)
 	qualityFormat := fmt.Sprintf("bestvideo[ext=mp4][height<=%s]+bestaudio[ext=m4a]/best[ext=mp4]/best", maxH)
 	if isFB {
 		qualityFormat = fmt.Sprintf("bestvideo[ext=mp4][height<=%s]+bestaudio[ext=m4a]/bestvideo[height<=%s]+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best[ext=webm]/best", maxH, maxH)
@@ -211,6 +218,7 @@ func (e YtDlpEngine) Download(ctx context.Context, url string, jobDir string, op
 	// Fallback to compatibility selection (may require merge).
 	if e.CompatMP4Fallback {
 		compatArgs := append([]string{}, args...)
+		compatArgs = append(compatArgs, impersonateArgs...)
 		compatFormat := fmt.Sprintf("bv*[vcodec^=avc1][height<=%s]+ba[acodec^=mp4a]/b[ext=mp4]/b", maxH)
 		if opts.MaxFilesize != "" {
 			compatFormat = fmt.Sprintf("bv*[vcodec^=avc1][height<=%s][filesize<%s]+ba[acodec^=mp4a][filesize<%s]/b[ext=mp4][filesize<%s]/b", maxH, opts.MaxFilesize, opts.MaxFilesize, opts.MaxFilesize)
@@ -333,19 +341,27 @@ except Exception as e:
 	var lastOut string
 	for _, candidate := range resolved {
 		res, err := execx.Run(ctx, candidate, "-c", code, shortcode, jobDir, cookieFile)
+		out := strings.TrimSpace(res.Output)
 		if err == nil {
 			lastErr = nil
+			lastOut = out
 			break
 		}
 		lastErr = err
-		lastOut = strings.TrimSpace(res.Output)
+		lastOut = out
+		// If THIS interpreter has instaloader (the failure isn't a missing-module
+		// error), it is authoritative: its error is the real reason the download
+		// failed — e.g. Instagram's 403 / login-required on anonymous photo posts.
+		// Stop here so a later interpreter that lacks the module can't overwrite it
+		// with a misleading "No module named 'instaloader'".
+		if !instaloaderModuleMissing(out) {
+			break
+		}
 	}
 	if lastErr != nil {
-		// If the Python env exists but the module isn't installed, don't waste retries;
-		// mark this engine as unavailable so the pipeline can fall back immediately.
-		if strings.Contains(lastOut, "No module named 'instaloader'") ||
-			strings.Contains(lastOut, "No module named \"instaloader\"") ||
-			strings.Contains(lastOut, "IMPORT_ERROR:") && strings.Contains(lastOut, "ModuleNotFoundError") {
+		// Module genuinely absent from every interpreter: mark the engine unavailable
+		// so the pipeline falls back immediately instead of retrying.
+		if instaloaderModuleMissing(lastOut) {
 			return nil, fmt.Errorf("%w: python module 'instaloader' is not installed (%s)", ErrEngineUnavailable, lastOut)
 		}
 		if lastOut != "" {
@@ -359,6 +375,18 @@ except Exception as e:
 		return nil, fmt.Errorf("instaloader produced no images")
 	}
 	return &model.DownloadResult{Files: files, Size: totalSize(files)}, nil
+}
+
+// instaloaderModuleMissing reports whether a Python run failed because the
+// instaloader module isn't importable (vs. instaloader running and failing for a
+// real reason, e.g. Instagram's 403). Used to avoid a later interpreter that lacks
+// the module masking the authoritative interpreter's real error.
+func instaloaderModuleMissing(out string) bool {
+	if strings.Contains(out, "No module named 'instaloader'") ||
+		strings.Contains(out, "No module named \"instaloader\"") {
+		return true
+	}
+	return strings.Contains(out, "IMPORT_ERROR:") && strings.Contains(out, "ModuleNotFoundError")
 }
 
 func extractInstagramShortcode(link string) string {

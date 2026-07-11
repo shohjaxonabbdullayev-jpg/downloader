@@ -32,12 +32,13 @@ type FastInstagramEngine struct {
 
 func (FastInstagramEngine) Name() string { return "instagram-fast" }
 
-// igFastScript resolves an IG post two ways (both over curl_cffi's Chrome TLS)
-// and downloads the media into arg 2:
-//  1. graphql PolarisPostRootQuery — fastest, works for most reels/videos.
-//  2. parse the post page's embedded JSON — universal (photos, carousels, and
-//     posts the graphql "execution error"s on) AND doc_id-independent, so it keeps
-//     working when Instagram rotates the doc_id.
+// igFastScript resolves an IG post by fetching the post page (over curl_cffi's
+// Chrome TLS — the only fingerprint Instagram serves from a datacenter IP) and
+// recursively parsing its embedded JSON (the data-sjs <script> blobs) for the
+// media item, then downloads the media into arg 2. One request, universal (reels,
+// photos, carousels) and doc_id-INDEPENDENT — measured faster than the graphql
+// path (which needs a separate CSRF preflight and "execution error"s on many
+// non-reel posts), and it can't be broken by Instagram rotating its doc_id.
 // Exit 3 = curl_cffi unavailable (try the next interpreter); 2 = a real failure
 // (fall back to the next engine).
 const igFastScript = `
@@ -64,64 +65,39 @@ def collect(item):
         return [(cands[0]["url"], "jpg")]
     return []
 
-item = None
+def find_items(obj, found):
+    if isinstance(obj, dict):
+        if ("video_versions" in obj or "image_versions2" in obj or "carousel_media" in obj) and ("code" in obj or "pk" in obj):
+            found.append(obj)
+        for v in obj.values():
+            find_items(v, found)
+    elif isinstance(obj, list):
+        for v in obj:
+            find_items(v, found)
+    elif isinstance(obj, str):
+        t = obj.strip()
+        if t[:1] in "{[" and ("image_versions2" in t or "video_versions" in t or "carousel_media" in t):
+            try:
+                find_items(json.loads(t), found)
+            except Exception:
+                pass
 
-# Method 1: graphql (fast path).
 try:
-    j = s.get("https://www.instagram.com/data/shared_data/", timeout=15).json()
-    csrf = (j.get("config") or {}).get("csrf_token") or j.get("csrf_token") or ""
-    if csrf:
-        variables = json.dumps({"shortcode": shortcode,
-            "__relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider": False})
-        r = s.post("https://www.instagram.com/graphql/query",
-            data={"doc_id": "` + igPolarisPostDocID + `", "variables": variables},
-            headers={"X-IG-App-ID": "` + igAppID + `", "X-CSRFToken": csrf,
-                     "X-Requested-With": "XMLHttpRequest",
-                     "Referer": "https://www.instagram.com/p/%s/" % shortcode,
-                     "Origin": "https://www.instagram.com"},
-            timeout=15)
-        items = ((r.json().get("data") or {}).get("xdt_api__v1__media__shortcode__web_info") or {}).get("items") or []
-        if items:
-            item = items[0]
-except Exception:
-    pass
+    html = s.get("https://www.instagram.com/p/%s/" % shortcode, timeout=20).text
+except Exception as e:
+    print("PAGE_ERROR:", repr(e)); sys.exit(2)
 
-# Method 2: parse the post page (universal + doc_id-independent).
-if item is None:
-    def find_items(obj, found):
-        if isinstance(obj, dict):
-            if ("video_versions" in obj or "image_versions2" in obj or "carousel_media" in obj) and ("code" in obj or "pk" in obj):
-                found.append(obj)
-            for v in obj.values():
-                find_items(v, found)
-        elif isinstance(obj, list):
-            for v in obj:
-                find_items(v, found)
-        elif isinstance(obj, str):
-            t = obj.strip()
-            if t[:1] in "{[" and ("image_versions2" in t or "video_versions" in t or "carousel_media" in t):
-                try:
-                    find_items(json.loads(t), found)
-                except Exception:
-                    pass
-    try:
-        html = s.get("https://www.instagram.com/p/%s/" % shortcode, timeout=20).text
-        found = []
-        for m in re.finditer(r'<script type="application/json"[^>]*>(.*?)</script>', html, re.S):
-            blob = m.group(1)
-            if "image_versions2" in blob or "video_versions" in blob or "carousel_media" in blob:
-                try:
-                    find_items(json.loads(blob), found)
-                except Exception:
-                    pass
-        match = [it for it in found if it.get("code") == shortcode]
-        if match:
-            item = match[0]
-        elif len(found) == 1:
-            item = found[0]
-    except Exception as e:
-        print("PAGE_ERROR:", repr(e))
+found = []
+for m in re.finditer(r'<script type="application/json"[^>]*>(.*?)</script>', html, re.S):
+    blob = m.group(1)
+    if "image_versions2" in blob or "video_versions" in blob or "carousel_media" in blob:
+        try:
+            find_items(json.loads(blob), found)
+        except Exception:
+            pass
 
+match = [it for it in found if it.get("code") == shortcode]
+item = match[0] if match else (found[0] if len(found) == 1 else None)
 if item is None:
     print("NO_MEDIA_FOUND"); sys.exit(2)
 

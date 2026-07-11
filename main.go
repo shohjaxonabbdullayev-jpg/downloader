@@ -8,10 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -90,6 +88,10 @@ func main() {
 	_, _ = bot.Request(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: true})
 
 	log.Printf("Bot started: @%s", bot.Self.UserName)
+
+	// Warm the Instagram native extractor (CSRF token + connection pool) so the
+	// first reel/photo request is already on the fast path.
+	go platforms.WarmInstagram()
 
 	// Health check (Render / Railway)
 	go func() {
@@ -179,8 +181,9 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 			fidCache.Delete(key) // stale file_id(s) -> fall through to a fresh fetch
 		}
 
-		// Cold path: show a loading indicator while we fetch.
-		waitMsg, werr := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda..."))
+		// Cold path: show a loading indicator, but send it CONCURRENTLY so the
+		// download starts immediately instead of blocking on the Telegram round-trip.
+		loading := startLoading(bot, chatID)
 
 		// Heuristic platform/type avoids an expensive yt-dlp --dump-json probe.
 		info := heuristicInfo(link)
@@ -188,7 +191,7 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 		jobID, jobDir, jerr := downloader.NewJobDir(downloadsDir)
 		if jerr != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Yuklab bo‘lmadi"))
-			deleteMsg(bot, chatID, waitMsg, werr)
+			loading.delete(bot, chatID)
 			continue
 		}
 		// Overall job timeout for yt-dlp / instaloader.
@@ -216,7 +219,7 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 			}
 			bot.Send(tgbotapi.NewMessage(chatID, msgText))
 			_ = os.RemoveAll(jobDir)
-			deleteMsg(bot, chatID, waitMsg, werr)
+			loading.delete(bot, chatID)
 			continue
 		}
 
@@ -234,7 +237,7 @@ func handleMessage(bot *tgbotapi.BotAPI, dl *downloader.PipelineDownloader, msg 
 
 		// Free disk immediately: media is sent, nothing is kept on disk.
 		_ = os.RemoveAll(jobDir)
-		deleteMsg(bot, chatID, waitMsg, werr)
+		loading.delete(bot, chatID)
 	}
 }
 
@@ -309,23 +312,6 @@ func isVideoFile(file string) bool {
 	return false
 }
 
-// videoDurationSeconds returns the video's duration via ffprobe (0 if unknown).
-// Passing the duration helps Telegram render a proper, correctly-sized player
-// across clients instead of a generic preview.
-func videoDurationSeconds(file string) int {
-	out, err := exec.Command("ffprobe", "-v", "error",
-		"-show_entries", "format=duration",
-		"-of", "default=noprint_wrappers=1:nokey=1", file).Output()
-	if err != nil {
-		return 0
-	}
-	secs, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-	if err != nil || secs <= 0 {
-		return 0
-	}
-	return int(secs + 0.5)
-}
-
 // trackingParams are share/analytics query params that don't change the media,
 // so they're stripped from the cache key to maximize file_id cache hits across
 // differently-shared copies of the same link.
@@ -365,9 +351,8 @@ func sendMedia(bot *tgbotapi.BotAPI, chatID int64, file string, replyTo int) (ki
 		v.Caption = caption
 		v.SupportsStreaming = true
 		v.ReplyToMessageID = replyTo
-		if d := videoDurationSeconds(file); d > 0 {
-			v.Duration = d
-		}
+		// Duration is intentionally not probed (no per-video ffprobe spawn) —
+		// Telegram derives it from the MP4 container itself.
 		m, err := bot.Send(v)
 		if err != nil {
 			log.Printf("[send] video chat_id=%d err=%v", chatID, err)
@@ -451,10 +436,30 @@ func sendByFileID(bot *tgbotapi.BotAPI, chatID int64, it fidcache.Item, replyTo 
 	return err
 }
 
-// deleteMsg removes the transient "loading" message if it was sent.
-func deleteMsg(bot *tgbotapi.BotAPI, chatID int64, m tgbotapi.Message, sendErr error) {
-	if sendErr != nil {
-		return
+// loadingMsg is a "⏳ Yuklanmoqda..." message sent in the background so the
+// download doesn't wait on the Telegram round-trip. delete() joins the send
+// before removing it.
+type loadingMsg struct {
+	done chan struct{}
+	id   int
+	ok   bool
+}
+
+func startLoading(bot *tgbotapi.BotAPI, chatID int64) *loadingMsg {
+	lm := &loadingMsg{done: make(chan struct{})}
+	go func() {
+		defer close(lm.done)
+		if m, err := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Yuklanmoqda...")); err == nil {
+			lm.id, lm.ok = m.MessageID, true
+		}
+	}()
+	return lm
+}
+
+// delete removes the transient loading message once it has actually been sent.
+func (lm *loadingMsg) delete(bot *tgbotapi.BotAPI, chatID int64) {
+	<-lm.done
+	if lm.ok {
+		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: lm.id})
 	}
-	_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: m.MessageID})
 }

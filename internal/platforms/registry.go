@@ -45,9 +45,9 @@ func DefaultRegistry() Registry {
 	ig := InstaloaderImagesEngine{Python: strings.TrimSpace(os.Getenv("INSTALOADER_PYTHON"))}
 
 	return Registry{
-		// Instagram: video -> yt-dlp; photo/carousel -> Instaloader (the only engine
-		// that fetches IG photos without cookies) then yt-dlp as a fallback.
-		Instagram: instagramStrategy{insta: ig, yt: yt},
+		// Instagram: native graphql extractor first (fast, handles video + images),
+		// then Instaloader (image fallback) and yt-dlp (video fallback).
+		Instagram: instagramStrategy{native: NativeInstagramEngine{}, insta: ig, yt: yt},
 		// YouTube downloading is removed — it can't be fetched from a datacenter IP
 		// without a proxy/cookies, and no free workaround is reliable. main.go
 		// replies "not supported" for YouTube links; this no-engine strategy is a

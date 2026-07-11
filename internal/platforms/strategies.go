@@ -26,19 +26,22 @@ func (s ytOnlyStrategy) OptionsMatrix(url string) []Options {
 }
 
 type instagramStrategy struct {
-	insta Engine
-	yt    Engine
+	native Engine // native graphql extractor — fast, handles video + images
+	insta  Engine // instaloader fork — image/carousel fallback
+	yt     Engine // yt-dlp — video fallback
 }
 
 func (s instagramStrategy) EnginesFor(info *model.MediaInfo) []Engine {
+	// Native graphql extractor first for everything (a single request that returns
+	// reels, photos, and carousels in ~0.5s). It falls through on any failure —
+	// e.g. Instagram rotating its doc_id — to the proven engines:
 	if info != nil && strings.EqualFold(info.Type, "video") {
-		return []Engine{s.yt}
+		return []Engine{s.native, s.yt}
 	}
-	// Photos / carousels: Instaloader FIRST — yt-dlp can't extract Instagram
-	// photos anonymously (it reports "0 items"), so Instaloader is the only engine
-	// that fetches them without cookies. yt-dlp stays as a fallback for the case a
-	// /p/ URL is actually a video.
-	return []Engine{s.insta, s.yt}
+	// Photos / carousels: after native, Instaloader (the only engine that fetches
+	// IG photos without cookies; yt-dlp can't — it reports "0 items"), then yt-dlp
+	// for the case a /p/ URL is actually a video.
+	return []Engine{s.native, s.insta, s.yt}
 }
 
 func (s instagramStrategy) OptionsMatrix(url string) []Options {
